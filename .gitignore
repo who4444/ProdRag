@@ -1,0 +1,8 @@
+backend/data
+.venv
+.env
+__pycache__
+*.pyc
+.pytest_cache
+prodrag.egg-info
+~/.cache/clip

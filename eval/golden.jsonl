@@ -1,0 +1,3 @@
+{"question": "What does the ingestion pipeline do?", "expected_sources": ["docs/ingestion.md"]}
+{"question": "How is retrieval scored?", "expected_sources": ["docs/retrieval.md"]}
+{"question": "What model generates answers?", "expected_sources": ["docs/models.md"]}
