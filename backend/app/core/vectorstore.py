@@ -13,7 +13,7 @@ from qdrant_client.models import (
     VectorParams,
 )
 
-from .config import settings
+from ..config import settings
 
 _client: AsyncQdrantClient | None = None
 
@@ -37,6 +37,7 @@ async def ensure_collections() -> None:
     for name, dim in (
         (settings.collection_text, settings.embedding_dim),
         (settings.collection_image, settings.vision_dim),
+        (settings.memory_collection, settings.embedding_dim),
     ):
         if await client.collection_exists(name):
             continue
@@ -95,6 +96,26 @@ async def search_images(vector: list[float], k: int) -> list[dict]:
     client = await get_client()
     res = await client.query_points(
         settings.collection_image,
+        query=vector,
+        limit=k,
+        with_payload=True,
+    )
+    return [{"score": h.score, **h.payload} for h in res.points]
+
+
+async def upsert_episodes(items: list[tuple[dict, list[float]]]) -> str | None:
+    client = await get_client()
+    points = [PointStruct(id=_point_id("episode", p), vector=v, payload=p) for p, v in items]
+    if not points:
+        return None
+    await client.upsert(settings.memory_collection, points)
+    return str(points[0].id)
+
+
+async def search_episodes(vector: list[float], k: int) -> list[dict]:
+    client = await get_client()
+    res = await client.query_points(
+        settings.memory_collection,
         query=vector,
         limit=k,
         with_payload=True,

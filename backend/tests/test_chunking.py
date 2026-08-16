@@ -1,4 +1,4 @@
-from app.chunking import chunk_text
+from app.ingest.chunking import chunk_text
 
 
 def test_chunk_text_covers_and_overlaps():

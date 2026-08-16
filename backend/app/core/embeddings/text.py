@@ -8,7 +8,7 @@ from functools import lru_cache
 import httpx
 from openai import AsyncOpenAI
 
-from ..config import settings
+from ...config import settings
 
 
 @lru_cache(maxsize=1)

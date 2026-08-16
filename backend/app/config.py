@@ -38,16 +38,27 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379"
 
-    minio_endpoint: str = "localhost:9000"
-    minio_access_key: str = "minioadmin"
-    minio_secret_key: str = "minioadmin"
-    minio_secure: bool = False
-    minio_bucket: str = "prodrag-assets"
+    # Object storage via S3. Primary: Supabase Storage (S3-compatible at
+    # {supabase_url}/storage/v1/s3, keys from Project Settings > Storage).
+    # PRODRAG_S3_ENDPOINT overrides the endpoint for any other S3-compatible store.
+    supabase_url: str = ""
+    s3_endpoint: str = ""
+    s3_region: str = "us-east-1"
+    s3_access_key: str = ""
+    s3_secret_key: str = ""
+    storage_bucket: str = "prodrag-assets"
 
     chunk_size: int = 800
     chunk_overlap: int = 100
     page_dpi: int = 150
     min_figure_area: float = 0.04
+
+    # Research agent + memory
+    agent_model: str = "deepseek-v4-flash"
+    agent_max_steps: int = 12
+    memory_collection: str = "episodes"
+    memory_top_k: int = 5
+    memory_ttl_s: int = 86400
 
 
 settings = Settings()

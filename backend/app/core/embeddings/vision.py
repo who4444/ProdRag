@@ -12,7 +12,7 @@ import threading
 
 import httpx
 
-from ..config import settings
+from ...config import settings
 
 _model = None
 _preprocess = None

@@ -1,8 +1,8 @@
 from arq.connections import RedisSettings
 
 from .config import settings
-from . import storage, vectorstore
-from .pipeline import ingest_document
+from .core import storage, vectorstore
+from .ingest.pipeline import ingest_document
 
 
 async def on_startup(ctx: dict) -> None:

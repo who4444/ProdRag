@@ -3,8 +3,9 @@ import json
 
 from openai import AsyncOpenAI
 
-from . import storage
-from .config import settings
+from ..core import storage
+from ..config import settings
+from .retrieval import source_items
 
 
 async def answer(
@@ -14,27 +15,7 @@ async def answer(
     image_hits: list[dict],
 ):
     """Yields NDJSON: a sources event (text + image refs), then text deltas."""
-    items = [
-        {
-            "kind": "text",
-            "source": h["source"],
-            "page": h["page"],
-            "score": round(h["score"], 3),
-            "content": h["text"][:200],
-        }
-        for h in text_hits
-    ]
-    items += [
-        {
-            "kind": "image",
-            "source": h["source"],
-            "page": h["page"],
-            "score": round(h["score"], 3),
-            "image_url": f"/files/{h['object_key']}",
-        }
-        for h in image_hits
-    ]
-    yield json.dumps({"type": "sources", "items": items}) + "\n"
+    yield json.dumps({"type": "sources", "items": source_items(text_hits, image_hits)}) + "\n"
 
     context = "\n\n".join(f"[{i + 1}] {h['text']}" for i, h in enumerate(text_hits))
     if settings.chat_supports_images:
