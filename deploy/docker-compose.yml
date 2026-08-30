@@ -19,22 +19,6 @@ services:
       interval: 5s
       retries: 10
 
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    volumes:
-      - minio_data:/data
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 5s
-      retries: 10
-
   api:
     build:
       context: ..
@@ -43,15 +27,12 @@ services:
     environment:
       PRODRAG_QDRANT_URL: http://qdrant:6333
       PRODRAG_REDIS_URL: redis://redis:6379
-      PRODRAG_MINIO_ENDPOINT: minio:9000
     ports:
       - "8000:8000"
     depends_on:
       qdrant:
         condition: service_healthy
       redis:
-        condition: service_healthy
-      minio:
         condition: service_healthy
 
   worker:
@@ -63,15 +44,11 @@ services:
     environment:
       PRODRAG_QDRANT_URL: http://qdrant:6333
       PRODRAG_REDIS_URL: redis://redis:6379
-      PRODRAG_MINIO_ENDPOINT: minio:9000
     depends_on:
       qdrant:
         condition: service_healthy
       redis:
         condition: service_healthy
-      minio:
-        condition: service_healthy
 
 volumes:
   qdrant_data:
-  minio_data:

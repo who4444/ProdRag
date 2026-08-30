@@ -38,20 +38,26 @@ class Settings(BaseSettings):
 
     redis_url: str = "redis://localhost:6379"
 
-    # Object storage via S3. Primary: Supabase Storage (S3-compatible at
-    # {supabase_url}/storage/v1/s3, keys from Project Settings > Storage).
-    # PRODRAG_S3_ENDPOINT overrides the endpoint for any other S3-compatible store.
+    # Object storage via Supabase Storage's native REST API. Needs the project
+    # URL and the secret API key (Project Settings > API).
     supabase_url: str = ""
-    s3_endpoint: str = ""
-    s3_region: str = "us-east-1"
-    s3_access_key: str = ""
-    s3_secret_key: str = ""
+    supabase_secret_key: str = ""
     storage_bucket: str = "prodrag-assets"
+
+    # Relational store (Supabase Postgres). Used by core/db.py for documents,
+    # parts, conversations, messages, episodes. Schema: backend/app/core/schema.sql.
+    database_url: str = ""
 
     chunk_size: int = 800
     chunk_overlap: int = 100
     page_dpi: int = 150
     min_figure_area: float = 0.04
+
+    # Retrieval: hybrid dense+BM25 first pass, optional cross-encoder rerank
+    retrieval_hybrid_k: int = 12
+    rerank_service_url: str = ""
+    rerank_service_token: str = ""
+    rerank_model: str = "BAAI/bge-reranker-base"
 
     # Research agent + memory
     agent_model: str = "deepseek-v4-flash"

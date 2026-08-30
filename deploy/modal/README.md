@@ -63,11 +63,30 @@ The Qdrant collection is created with `PRODRAG_EMBEDDING_DIM` on first startup.
 If you switch models, delete/recreate the `text_chunks` collection (e.g. drop
 the qdrant volume) or reindex.
 
+## Kill when the server is offline
+
+Both apps use `min_containers=0`, so Modal **scales to zero when idle**: with no
+requests arriving (server down, dev machine off, etc.) the GPU containers shut
+down and you're billed $0 until the next request cold-starts one. No heartbeat,
+cron, or shutdown hook needed — it's automatic.
+
+For explicit control, use `deploy/modal/manage.sh`:
+
+```bash
+bash deploy/modal/manage.sh status  # deployed apps + running containers
+bash deploy/modal/manage.sh stop    # fully undeploy both apps (release GPU now)
+bash deploy/modal/manage.sh start   # redeploy both apps (cached image, ~3s)
+```
+
+`stop` permanently undeploys the apps (endpoints return 404 until you `start`).
+Since idle already costs $0, `stop` is only needed to force an immediate release
+or a full teardown.
+
 ## Cost / scaling
 
-- `min_containers=1`, `max_containers=4`, `concurrent(max_inputs=8)`: one warm T4,
-  up to 4 total, each handling 8 concurrent batch requests. Batch, don't stream
-  single images, to keep T4 utilization high.
+- `min_containers=0`, `max_containers=4`, `concurrent(max_inputs=8)`: scale to
+  zero when idle, up to 4 T4s under load, each handling 8 concurrent batch
+  requests. Batch, don't stream single images, to keep T4 utilization high.
+- Cold starts (~30-60s, first request after idle) are covered by the 120s client
+  timeouts in `embeddings/text.py` and `embeddings/vision.py`.
 - Swap `gpu="T4"` for `gpu="A10G"`/`"L4"` if throughput needs grow.
-- GPU memory is idle when the worker has no pending figures — Modal scales the
-  pool to zero (minus the warm container).

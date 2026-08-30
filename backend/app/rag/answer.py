@@ -1,11 +1,15 @@
 import base64
 import json
+import logging
+import time
 
 from openai import AsyncOpenAI
 
 from ..core import storage
 from ..config import settings
 from .retrieval import source_items
+
+logger = logging.getLogger(__name__)
 
 
 async def answer(
@@ -15,6 +19,8 @@ async def answer(
     image_hits: list[dict],
 ):
     """Yields NDJSON: a sources event (text + image refs), then text deltas."""
+    t0 = time.perf_counter()
+    logger.info("answer start model=%s images_in_context=%d question=%r", settings.chat_model, len(image_hits), question[:120])
     yield json.dumps({"type": "sources", "items": source_items(text_hits, image_hits)}) + "\n"
 
     context = "\n\n".join(f"[{i + 1}] {h['text']}" for i, h in enumerate(text_hits))
@@ -54,3 +60,4 @@ async def answer(
         delta = part.choices[0].delta.content
         if delta:
             yield json.dumps({"type": "text", "delta": delta}) + "\n"
+    logger.info("answer complete in %.2fs question=%r", time.perf_counter() - t0, question[:120])

@@ -11,8 +11,10 @@ import io
 import threading
 
 import httpx
+from httpx import HTTPStatusError, TransportError
 
 from ...config import settings
+from ..retry import retry_async
 
 _model = None
 _preprocess = None
@@ -24,18 +26,29 @@ def _remote_url() -> str | None:
     return url or None
 
 
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, TransportError)
+
+
 async def _remote_embed(kind: str, items: list[str]) -> list[list[float]]:
     headers = {}
     if settings.clip_service_token:
         headers["Authorization"] = f"Bearer {settings.clip_service_token}"
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            _remote_url(),
-            json={"type": kind, "data": items},
-            headers=headers,
-        )
-        resp.raise_for_status()
-    return resp.json()["embeddings"]
+
+    async def _call():
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                _remote_url(),
+                json={"type": kind, "data": items},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    payload = await retry_async(_call, is_transient=_is_transient, label="clip_service")
+    return payload["embeddings"]
 
 
 async def embed_images(pngs: list[bytes]) -> list[list[float]]:

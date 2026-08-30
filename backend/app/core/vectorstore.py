@@ -1,5 +1,6 @@
 import hashlib
 import json
+import logging
 import uuid
 
 from qdrant_client import AsyncQdrantClient
@@ -8,12 +9,21 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    Fusion,
+    FusionQuery,
     MatchValue,
+    Modifier,
     PointStruct,
+    Prefetch,
+    SparseVector,
+    SparseVectorParams,
     VectorParams,
 )
 
 from ..config import settings
+from .sparse import to_sparse
+
+logger = logging.getLogger(__name__)
 
 _client: AsyncQdrantClient | None = None
 
@@ -40,14 +50,33 @@ async def ensure_collections() -> None:
         (settings.memory_collection, settings.embedding_dim),
     ):
         if await client.collection_exists(name):
+            if name == settings.collection_text and not await _has_sparse(name, client):
+                logger.warning(
+                    "text collection '%s' lacks the 'bm25' sparse vector — delete it "
+                    "and re-ingest to enable hybrid retrieval",
+                    name,
+                )
             continue
         try:
-            await client.create_collection(
-                name, vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
-            )
+            if name == settings.collection_text:
+                await client.create_collection(
+                    name,
+                    vectors_config={"": VectorParams(size=dim, distance=Distance.COSINE)},
+                    sparse_vectors_config={"bm25": SparseVectorParams(modifier=Modifier.IDF)},
+                )
+            else:
+                await client.create_collection(
+                    name, vectors_config=VectorParams(size=dim, distance=Distance.COSINE)
+                )
         except UnexpectedResponse as exc:
             if exc.status_code != 409:
                 raise
+
+
+async def _has_sparse(name: str, client) -> bool:
+    info = await client.get_collection(name)
+    sparse = info.config.params.sparse_vectors
+    return bool(sparse and "bm25" in sparse)
 
 
 def _point_id(kind: str, payload: dict) -> str:
@@ -57,9 +86,20 @@ def _point_id(kind: str, payload: dict) -> str:
     return str(uuid.UUID(int=int.from_bytes(digest, "big")))
 
 
+async def point_id(kind: str, payload: dict) -> str:
+    return _point_id(kind, payload)
+
+
 async def upsert_text(items: list[tuple[dict, list[float]]]) -> int:
     client = await get_client()
-    points = [PointStruct(id=_point_id("text", p), vector=v, payload=p) for p, v in items]
+    points = [
+        PointStruct(
+            id=_point_id("text", p),
+            vector={"": v, "bm25": SparseVector(**to_sparse(p["text"]))},
+            payload=p,
+        )
+        for p, v in items
+    ]
     if not points:
         return 0
     await client.upsert(settings.collection_text, points)
@@ -75,18 +115,43 @@ async def upsert_image(items: list[tuple[dict, list[float]]]) -> int:
     return len(points)
 
 
-async def search_text(vector: list[float], k: int, source: str | None = None) -> list[dict]:
+def _hybrid_prefetch(dense: list[float], sparse: dict, qf: Filter | None, prefetch_k: int) -> list[Prefetch]:
+    """Prefetch list for dense + sparse (BM25) retrieval fused with RRF."""
+    return [
+        Prefetch(query=dense, limit=prefetch_k, filter=qf),
+        Prefetch(query=SparseVector(**sparse), using="bm25", limit=prefetch_k, filter=qf),
+    ]
+
+
+async def search_text(
+    vector: list[float],
+    k: int,
+    source: str | None = None,
+    sparse_query: dict | None = None,
+    prefetch_k: int | None = None,
+) -> list[dict]:
     client = await get_client()
-    query_filter = None
+    qf = None
     if source:
-        query_filter = Filter(
-            must=[FieldCondition(key="source", match=MatchValue(value=source))]
-        )
+        qf = Filter(must=[FieldCondition(key="source", match=MatchValue(value=source))])
+    if sparse_query and prefetch_k:
+        try:
+            res = await client.query_points(
+                settings.collection_text,
+                prefetch=_hybrid_prefetch(vector, sparse_query, qf, prefetch_k),
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=k,
+                with_payload=True,
+            )
+            return [{"score": h.score, **h.payload} for h in res.points]
+        except UnexpectedResponse:
+            # Old collection without the 'bm25' sparse vector (see ensure_collections).
+            logger.warning("hybrid search failed on '%s' — falling back to dense", settings.collection_text)
     res = await client.query_points(
         settings.collection_text,
         query=vector,
         limit=k,
-        query_filter=query_filter,
+        query_filter=qf,
         with_payload=True,
     )
     return [{"score": h.score, **h.payload} for h in res.points]
@@ -101,6 +166,14 @@ async def search_images(vector: list[float], k: int) -> list[dict]:
         with_payload=True,
     )
     return [{"score": h.score, **h.payload} for h in res.points]
+
+
+async def delete_points(point_ids: list[str]) -> None:
+    client = await get_client()
+    if not point_ids:
+        return
+    await client.delete(settings.collection_text, point_ids)
+    await client.delete(settings.collection_image, point_ids)
 
 
 async def upsert_episodes(items: list[tuple[dict, list[float]]]) -> str | None:

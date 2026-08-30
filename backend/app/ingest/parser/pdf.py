@@ -67,7 +67,6 @@ class Page:
 class Document:
     pages: list[Page] = field(default_factory=list)
 
-
 def parse_pdf(data: bytes, dpi: int = 150, min_figure_area: float = MIN_FIGURE_AREA) -> Document:
     """Parse a PDF into a layout tree: Document -> Page -> [TextBlock | Table | Figure].
 

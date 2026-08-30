@@ -51,7 +51,7 @@ class EmbedResponse(BaseModel):
 @app.cls(
     gpu="T4",
     secrets=[modal.Secret.from_name("prodrag-clip-token", required_keys=["AUTH_TOKEN"])],
-    min_containers=1,
+    min_containers=0,
     max_containers=4,
     timeout=300,
 )

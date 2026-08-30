@@ -6,9 +6,11 @@ is set. Falls back to OpenAI text-embedding-3-small for local dev.
 from functools import lru_cache
 
 import httpx
+from httpx import HTTPStatusError, TransportError
 from openai import AsyncOpenAI
 
 from ...config import settings
+from ..retry import retry_async
 
 
 @lru_cache(maxsize=1)
@@ -21,18 +23,30 @@ def _remote_url() -> str | None:
     return url or None
 
 
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, HTTPStatusError):
+        return exc.response.status_code >= 500
+    return isinstance(exc, TransportError)
+
+
 async def _remote_embed(texts: list[str], query: bool) -> list[list[float]]:
     headers = {}
     if settings.embed_service_token:
         headers["Authorization"] = f"Bearer {settings.embed_service_token}"
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.post(
-            _remote_url(),
-            json={"data": texts, "query": query},
-            headers=headers,
-        )
-        resp.raise_for_status()
-    payload = resp.json()
+
+    async def _call():
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(
+                _remote_url(),
+                json={"data": texts, "query": query},
+                headers=headers,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+    payload = await retry_async(
+        _call, is_transient=_is_transient, label="embed_service"
+    )
     if payload["dim"] != settings.embedding_dim:
         raise RuntimeError(
             f"embed service dim {payload['dim']} != PRODRAG_EMBEDDING_DIM "

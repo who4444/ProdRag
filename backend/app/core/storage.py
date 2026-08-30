@@ -1,68 +1,87 @@
-"""S3 object storage backed by Supabase Storage (S3-compatible API).
+"""Supabase Storage client (native REST API).
 
-Supabase's endpoint carries a path (https://<ref>.supabase.co/storage/v1/s3),
-so we use boto3 (the minio client rejects path endpoints). The scheme comes
-from the endpoint URL itself.
+Uses the Storage HTTP API ({supabase_url}/storage/v1/...) with the secret
+API key instead of the S3-compatible endpoint — no boto3.
 """
 
-import asyncio
-import io
-from functools import lru_cache
-
-import boto3
-from botocore.exceptions import ClientError
+import httpx
+from httpx import HTTPStatusError, TransportError
 
 from ..config import settings
+from .retry import retry_async
 
 
-def _s3_endpoint() -> str:
-    if settings.s3_endpoint:
-        return settings.s3_endpoint.rstrip("/")
-    if settings.supabase_url:
-        return settings.supabase_url.rstrip("/") + "/storage/v1/s3"
-    raise RuntimeError("configure PRODRAG_SUPABASE_URL or PRODRAG_S3_ENDPOINT")
+def _base_url() -> str:
+    if not settings.supabase_url:
+        raise RuntimeError("configure PRODRAG_SUPABASE_URL")
+    return settings.supabase_url.rstrip("/") + "/storage/v1"
 
 
-@lru_cache(maxsize=1)
-def _client():
-    return boto3.client(
-        "s3",
-        endpoint_url=_s3_endpoint(),
-        aws_access_key_id=settings.s3_access_key,
-        aws_secret_access_key=settings.s3_secret_key,
-        region_name=settings.s3_region,
-    )
+def _headers() -> dict:
+    if not settings.supabase_secret_key:
+        raise RuntimeError("configure PRODRAG_SUPABASE_SECRET_KEY")
+    return {
+        "apikey": settings.supabase_secret_key,
+        "Authorization": f"Bearer {settings.supabase_secret_key}",
+    }
+
+
+def _is_transient(exc: Exception) -> bool:
+    if isinstance(exc, HTTPStatusError):
+        return exc.response.status_code >= 500 or exc.response.status_code == 429
+    return isinstance(exc, TransportError)
+
+
+async def _request(method: str, url: str, *, content: bytes | None = None,
+                   json_body: dict | None = None, extra: dict | None = None) -> httpx.Response:
+    async def _call():
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.request(
+                method, url, content=content, json=json_body,
+                headers={**_headers(), **(extra or {})},
+            )
+            resp.raise_for_status()
+            return resp
+
+    return await retry_async(_call, is_transient=_is_transient, label=f"storage.{method} {url}")
 
 
 async def ensure_bucket() -> None:
-    client = _client()
+    buckets = (await _request("GET", f"{_base_url()}/bucket")).json()
+    if any(b.get("id") == settings.storage_bucket for b in buckets):
+        return
     try:
-        await asyncio.to_thread(client.head_bucket, Bucket=settings.storage_bucket)
-    except ClientError:
-        try:
-            await asyncio.to_thread(client.create_bucket, Bucket=settings.storage_bucket)
-        except Exception as exc:
-            raise RuntimeError(
-                f"bucket '{settings.storage_bucket}' is missing and could not be created "
-                f"({exc}). Create it in Supabase Storage (dashboard or storage.buckets SQL) "
-                "and retry."
-            )
+        await _request(
+            "POST",
+            f"{_base_url()}/bucket",
+            json_body={"id": settings.storage_bucket, "name": settings.storage_bucket, "public": False},
+        )
+    except HTTPStatusError as exc:
+        raise RuntimeError(
+            f"bucket '{settings.storage_bucket}' is missing and could not be created "
+            f"({exc}). Create it in Supabase Storage (dashboard or storage.buckets SQL) "
+            "and retry."
+        )
 
 
 async def put_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> None:
-    client = _client()
-    await asyncio.to_thread(
-        client.put_object,
-        Bucket=settings.storage_bucket,
-        Key=key,
-        Body=io.BytesIO(data),
-        ContentType=content_type,
+    url = f"{_base_url()}/object/{settings.storage_bucket}/{key}"
+    await _request(
+        "POST", url,
+        content=data,
+        extra={"Content-Type": content_type, "x-upsert": "true"},
     )
 
 
 async def get_bytes(key: str) -> bytes:
-    client = _client()
-    resp = await asyncio.to_thread(
-        client.get_object, Bucket=settings.storage_bucket, Key=key
-    )
-    return resp["Body"].read()
+    url = f"{_base_url()}/object/{settings.storage_bucket}/{key}"
+    return (await _request("GET", url)).content
+
+
+async def delete_object(key: str) -> None:
+    url = f"{_base_url()}/object/{settings.storage_bucket}/{key}"
+    try:
+        await _request("DELETE", url)
+    except HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
