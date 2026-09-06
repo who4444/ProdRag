@@ -107,3 +107,116 @@ def rd_research_stream(base_url: str, token: str, requirements: dict, session_id
     if r.status_code >= 400:
         raise APIError(f"HTTP {r.status_code}: {r.text[:500]}")
     return r
+
+
+def code_analyze(base_url: str, token: str, artifact: dict) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.post(f"{base_url}/code/analyze", headers=headers, json={"artifact": artifact}, timeout=60)
+    _check(r)
+    return r.json()
+
+
+def code_generate_stream(base_url: str, token: str, artifact: dict, session_id: str | None = None):
+    headers = {"Authorization": f"Bearer {token}"}
+    payload: dict = {"artifact": artifact}
+    if session_id:
+        payload["session_id"] = session_id
+    r = requests.post(f"{base_url}/code/generate", headers=headers, json=payload, stream=True, timeout=300)
+    if r.status_code >= 400:
+        raise APIError(f"HTTP {r.status_code}: {r.text[:500]}")
+    return r
+
+
+def list_documents(base_url: str, token: str, status: str | None = None) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {}
+    if status:
+        params["status"] = status
+    r = requests.get(f"{base_url}/documents", headers=headers, params=params, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def document_delete(base_url: str, token: str, doc_id: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.delete(f"{base_url}/documents/{doc_id}", headers=headers, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def document_reingest(base_url: str, token: str, doc_id: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.post(f"{base_url}/documents/{doc_id}/reingest", headers=headers, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def list_rd_runs(base_url: str, token: str, limit: int = 20, offset: int = 0, session_id: str | None = None, status: str | None = None) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict = {"limit": limit, "offset": offset}
+    if session_id:
+        params["session_id"] = session_id
+    if status:
+        params["status"] = status
+    r = requests.get(f"{base_url}/rd/runs", headers=headers, params=params, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def get_rd_run(base_url: str, token: str, run_id: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/rd/runs/{run_id}", headers=headers, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def list_code_runs(base_url: str, token: str, limit: int = 20, offset: int = 0, status: str | None = None) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    params: dict = {"limit": limit, "offset": offset}
+    if status:
+        params["status"] = status
+    r = requests.get(f"{base_url}/code/runs", headers=headers, params=params, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def get_code_run(base_url: str, token: str, run_id: str) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/code/runs/{run_id}", headers=headers, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def list_conversations(base_url: str, token: str, limit: int = 20, offset: int = 0) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/conversations", headers=headers, params={"limit": limit, "offset": offset}, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def get_conversation_messages(base_url: str, token: str, conv_id: str, n: int = 20) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/conversations/{conv_id}/messages", headers=headers, params={"n": n}, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def memory_search(base_url: str, token: str, query: str, k: int = 5) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/memory/search", headers=headers, params={"query": query, "k": k}, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def memory_episodes(base_url: str, token: str, limit: int = 20) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/memory/episodes", headers=headers, params={"limit": limit}, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def web_search_probe(base_url: str, token: str, query: str, k: int = 5) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.post(f"{base_url}/tools/search", headers=headers, json={"query": query, "k": k}, timeout=30)
+    _check(r)
+    return r.json()

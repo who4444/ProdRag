@@ -2,13 +2,33 @@
 
 import json
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..code.analyzer import analyze_artifact
 from ..code.pipeline import code_generate
+from ..core import db
 
 router = APIRouter(prefix="/code")
+
+
+@router.get("/runs")
+async def list_code_runs(
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    artifact_run_id: str | None = None,
+    status: str | None = None,
+):
+    return await db.code_run_list(limit=limit, offset=offset, artifact_run_id=artifact_run_id, status=status)
+
+
+@router.get("/runs/{run_id}")
+async def get_code_run(run_id: str):
+    run = await db.code_run_get(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="run not found")
+    artifact = await db.code_artifact_get(run_id)
+    return {"run": run, "artifact": artifact}
 
 
 def _extract_artifact(body: dict) -> dict | None:

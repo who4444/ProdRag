@@ -6,6 +6,7 @@ ponytail: one async function per FileTask via asyncio.gather.
 import logging
 
 from ..config import settings
+from ..tools.search import enabled as search_enabled, format_results, web_search
 from .schemas import FileTask, GeneratedFile
 
 logger = logging.getLogger(__name__)
@@ -23,10 +24,19 @@ async def run_file_task(client, task) -> GeneratedFile:
     else:
         task_obj = FileTask(path="demo.py", goal=str(task), context_slice="")
 
+    web_ctx = ""
+    if search_enabled() and (not task_obj.context_slice.strip() or len(task_obj.context_slice) < 80):
+        try:
+            hits = await web_search(f"{task_obj.goal} {task_obj.context_slice[:120]}", k=3)
+            if hits:
+                web_ctx = "\n\nWeb context:\n" + format_results(hits)
+        except Exception:
+            pass
+
     prompt = (
         f"File to generate: {task_obj.path}\n"
         f"Goal: {task_obj.goal}\n"
-        f"Context slice: {task_obj.context_slice}\n\n"
+        f"Context slice: {task_obj.context_slice}{web_ctx}\n\n"
         f"Task: write ONLY the content for {task_obj.path}. "
         f"For demo.py, write runnable python that demonstrates the core idea on toy data. "
         f"For requirements.txt, list python dependencies one per line. "

@@ -38,9 +38,14 @@ async def run_direction(client, direction: Direction, k: int = 4, k_images: int 
         )
 
     # web search fallback when RAG is thin (no-op when unconfigured)
+    from ..tools.search import enabled as search_enabled
+
     web_hits: list[dict] = []
+    logger.info("subagent %s: rag hits=%d web_enabled=%s", direction.id, len(text_hits), search_enabled())
     if len(text_hits) < 2:
+        logger.info("subagent %s: thin RAG (%d hits) -> triggering web_search for %r", direction.id, len(text_hits), direction.question[:80])
         web_hits = await web_search(direction.question, k=3)
+        logger.info("subagent %s: web_search returned %d hits (enabled=%s)", direction.id, len(web_hits), search_enabled())
         if web_hits:
             context += "\n\nWeb results:\n" + format_results(web_hits)
             # surface web hits as sources (kind=web) so downstream can cite them
@@ -56,6 +61,8 @@ async def run_direction(client, direction: Direction, k: int = 4, k_images: int 
                         "image_url": None,
                     }
                 )
+        else:
+            logger.info("subagent %s: web_search no results (check PRODRAG_TAVILY_API_KEY / SERPER / SEARCH_SERVICE_URL)", direction.id)
 
     prompt = (
         f"Research direction: {direction.id} — {direction.question}\n"

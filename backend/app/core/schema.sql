@@ -32,7 +32,8 @@ create index if not exists parts_document_id_idx on public.parts (document_id);
 
 create table if not exists public.conversations (
   id          uuid primary key,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz
 );
 
 create table if not exists public.messages (
@@ -52,7 +53,8 @@ create table if not exists public.episodes (
   question    text not null,
   answer      text not null,
   sources     jsonb not null default '[]'::jsonb,
-  created_at  timestamptz not null default now()
+  created_at  timestamptz not null default now(),
+  expires_at  timestamptz
 );
 
 -- R&D pipeline — research runs and materialized artifacts (handoff to coding module)
@@ -62,7 +64,8 @@ create table if not exists public.research_runs (
   idea          text not null,
   requirements  jsonb not null default '{}'::jsonb,
   status        text not null default 'running',
-  created_at    timestamptz not null default now()
+  created_at    timestamptz not null default now(),
+  expires_at    timestamptz
 );
 
 create table if not exists public.research_artifacts (
@@ -79,7 +82,8 @@ create table if not exists public.code_runs (
   coding_spec   jsonb not null default '{}'::jsonb,
   files         jsonb not null default '[]'::jsonb,
   status        text not null default 'running',
-  created_at    timestamptz not null default now()
+  created_at    timestamptz not null default now(),
+  expires_at    timestamptz
 );
 
 create table if not exists public.code_artifacts (
@@ -88,3 +92,16 @@ create table if not exists public.code_artifacts (
   sandbox       jsonb not null default '{}'::jsonb,
   created_at    timestamptz not null default now()
 );
+
+-- v2.0: TTL + history indexes (lazy expiry: WHERE expires_at IS NULL OR expires_at > now())
+create index if not exists research_runs_created_at_idx on public.research_runs (created_at desc);
+create index if not exists research_runs_session_idx on public.research_runs (session_id);
+create index if not exists code_runs_created_at_idx on public.code_runs (created_at desc);
+create index if not exists episodes_created_at_idx on public.episodes (created_at desc);
+create index if not exists conversations_created_at_idx on public.conversations (created_at desc);
+
+-- idempotent adds for existing DBs (run psql -f schema.sql on upgrade)
+alter table public.conversations add column if not exists expires_at timestamptz;
+alter table public.episodes add column if not exists expires_at timestamptz;
+alter table public.research_runs add column if not exists expires_at timestamptz;
+alter table public.code_runs add column if not exists expires_at timestamptz;

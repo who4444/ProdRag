@@ -73,5 +73,11 @@ class Settings(BaseSettings):
     search_service_token: str = ""
     search_max_results: int = 5
 
+    # TTL for runs/episodes (0 = forever)
+    research_run_ttl_s: int = 2592000  # 30d
+    code_run_ttl_s: int = 2592000  # 30d
+    episodes_ttl_s: int = 604800  # 7d
+    conversations_ttl_s: int = 86400  # 1d (Redis conv:{id} already uses memory_ttl_s)
+
 
 settings = Settings()

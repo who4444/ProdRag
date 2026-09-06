@@ -48,16 +48,20 @@ async def answer(
     if settings.chat_supports_images:
         system += " Figures are attached as images — reference them when relevant."
 
-    stream = await client.chat.completions.create(
-        model=settings.chat_model,
-        messages=[
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_content},
-        ],
-        stream=True,
-    )
-    async for part in stream:
-        delta = part.choices[0].delta.content
-        if delta:
-            yield json.dumps({"type": "text", "delta": delta}) + "\n"
-    logger.info("answer complete in %.2fs question=%r", time.perf_counter() - t0, question[:120])
+    try:
+        stream = await client.chat.completions.create(
+            model=settings.chat_model,
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_content},
+            ],
+            stream=True,
+        )
+        async for part in stream:
+            delta = part.choices[0].delta.content
+            if delta:
+                yield json.dumps({"type": "text", "delta": delta}) + "\n"
+        logger.info("answer complete in %.2fs question=%r", time.perf_counter() - t0, question[:120])
+    except Exception as exc:
+        logger.exception("answer stream failed for question=%r", question[:120])
+        yield json.dumps({"type": "error", "delta": f"Generation failed: {exc}"}) + "\n"

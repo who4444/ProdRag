@@ -102,7 +102,16 @@ async def upsert_text(items: list[tuple[dict, list[float]]]) -> int:
     ]
     if not points:
         return 0
-    await client.upsert(settings.collection_text, points)
+    try:
+        await client.upsert(settings.collection_text, points)
+    except UnexpectedResponse as exc:
+        # Old collection without bm25 (see ensure_collections) — fall back to dense only
+        if "bm25" in str(exc).lower() or "vector name" in str(exc).lower():
+            logger.warning("upsert_text bm25 failed on '%s' — falling back to dense (delete collection to enable hybrid)", settings.collection_text)
+            dense_points = [PointStruct(id=pid.id, vector={"": vec}, payload=payload) for (payload, vec), pid in zip(items, points)]
+            await client.upsert(settings.collection_text, dense_points)
+        else:
+            raise
     return len(points)
 
 
