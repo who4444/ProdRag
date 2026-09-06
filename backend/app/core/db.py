@@ -1,7 +1,7 @@
 """Supabase Postgres access via the supabase REST client.
 
 Tables (public schema): documents, parts, conversations, messages, episodes,
-research_runs, research_artifacts.
+research_runs, research_artifacts, code_runs, code_artifacts.
 Schema is applied out-of-band (Supabase SQL editor / psql) — see schema.sql.
 """
 
@@ -165,4 +165,40 @@ async def research_artifact_upsert(run_id: str, artifact: dict, validation: dict
 
 async def research_artifact_get(run_id: str) -> dict | None:
     res = await _run(_client().table("research_artifacts").select("*").eq("run_id", run_id).execute)
+    return (res.data or [None])[0]
+
+
+# --------------------------------------------------------------------------
+# code_runs / code_artifacts (code generation)
+# --------------------------------------------------------------------------
+
+async def code_run_create(run_id: str, artifact_run_id: str | None, artifact: dict, status: str = "running") -> None:
+    # artifact may be full ResearchArtifact dict or just coding_spec; store flexibly
+    coding_spec = artifact.get("coding_spec") if isinstance(artifact, dict) and "coding_spec" in artifact else artifact
+    await _run(
+        _client().table("code_runs").insert(
+            {"id": run_id, "artifact_run_id": artifact_run_id, "coding_spec": coding_spec if isinstance(coding_spec, dict) else {}, "files": [], "status": status}
+        ).execute
+    )
+
+
+async def code_run_update(run_id: str, fields: dict) -> None:
+    await _run(_client().table("code_runs").update(fields).eq("id", run_id).execute)
+
+
+async def code_run_get(run_id: str) -> dict | None:
+    res = await _run(_client().table("code_runs").select("*").eq("id", run_id).execute)
+    return (res.data or [None])[0]
+
+
+async def code_artifact_upsert(run_id: str, artifact: dict, sandbox: dict) -> None:
+    await _run(
+        _client().table("code_artifacts").upsert(
+            {"run_id": run_id, "artifact": artifact, "sandbox": sandbox}
+        ).execute
+    )
+
+
+async def code_artifact_get(run_id: str) -> dict | None:
+    res = await _run(_client().table("code_artifacts").select("*").eq("run_id", run_id).execute)
     return (res.data or [None])[0]

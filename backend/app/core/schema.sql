@@ -71,3 +71,20 @@ create table if not exists public.research_artifacts (
   validation    jsonb not null default '{}'::jsonb,
   created_at    timestamptz not null default now()
 );
+
+-- Code generation — code runs and artifacts (demo.py + tests + sandbox)
+create table if not exists public.code_runs (
+  id            uuid primary key,
+  artifact_run_id uuid,
+  coding_spec   jsonb not null default '{}'::jsonb,
+  files         jsonb not null default '[]'::jsonb,
+  status        text not null default 'running',
+  created_at    timestamptz not null default now()
+);
+
+create table if not exists public.code_artifacts (
+  run_id        uuid primary key references public.code_runs(id) on delete cascade,
+  artifact      jsonb not null,
+  sandbox       jsonb not null default '{}'::jsonb,
+  created_at    timestamptz not null default now()
+);

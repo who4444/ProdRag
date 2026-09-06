@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ProdRag — Simple Test Frontend</title>
+<style>
+  *{box-sizing:border-box} body{font-family:system-ui,sans-serif;max-width:900px;margin:24px auto;padding:0 16px;background:#fafafa;color:#111}
+  h1{font-size:22px;margin:0 0 8px} h2{font-size:16px;margin:20px 0 8px;border-bottom:1px solid #ddd;padding-bottom:4px}
+  label{font-size:13px;color:#444} input,textarea,select,button{font:inherit}
+  input,textarea,select{width:100%;padding:8px;border:1px solid #ccc;border-radius:6px;background:#fff}
+  textarea{min-height:70px} .row{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .card{background:#fff;border:1px solid #ddd;border-radius:8px;padding:12px;margin:8px 0}
+  button{padding:8px 12px;border:1px solid #111;border-radius:6px;background:#111;color:#fff;cursor:pointer}
+  button.secondary{background:#fff;color:#111}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  pre{white-space:pre-wrap;word-break:break-word;background:#f4f4f4;padding:8px;border-radius:6px;max-height:300px;overflow:auto;font-size:12px}
+  .log{font-size:12px;color:#333}
+  .ok{color:#0a7a0a} .err{color:#b00}
+</style>
+</head>
+<body>
+<h1>ProdRag — Simple Test Frontend</h1>
+<p style="color:#555;font-size:13px">Tests health, documents, RAG query, R&D (analyzer + research), and web-search fallback. No build — open this file directly.</p>
+
+<div class="card">
+  <div class="row">
+    <div><label>API URL <input id="apiUrl" value="http://localhost:8000"></label></div>
+    <div><label>API Token <input id="apiToken" value="change-me" type="password"></label></div>
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button onclick="checkHealth()">Check health</button>
+    <span id="health" class="log"></span>
+  </div>
+</div>
+
+<h2>Documents</h2>
+<div class="card">
+  <div class="row">
+    <div><label>Upload PDF <input id="pdfFile" type="file" accept=".pdf"></label></div>
+    <div><label>Title (metadata) <input id="docTitle" placeholder="optional"></label></div>
+  </div>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button onclick="uploadDoc()">Upload</button>
+    <button class="secondary" onclick="listDocs()">List docs</button>
+  </div>
+  <pre id="docsOut"></pre>
+</div>
+
+<h2>Ask (RAG query)</h2>
+<div class="card">
+  <label>Question <textarea id="qQuestion" placeholder="e.g. What is the main contribution?"></textarea></label>
+  <div class="row" style="margin-top:8px">
+    <div><label>k <input id="qK" type="number" value="4" min="1" max="20"></label></div>
+    <div><label>k_images <input id="qKi" type="number" value="2" min="0" max="10"></label></div>
+  </div>
+  <button style="margin-top:8px" onclick="ask()">Ask</button>
+  <div id="qSources"></div>
+  <pre id="qAnswer"></pre>
+</div>
+
+<h2>R&D — Analyzer (second-request handshake)</h2>
+<div class="card">
+  <label>Idea / paper <textarea id="rdIdea" placeholder="e.g. Turn Attention Is All You Need into a minimal demo"></textarea></label>
+  <button style="margin-top:8px" onclick="rdAnalyze()">Analyze</button>
+  <pre id="rdAnalyzeOut"></pre>
+  <div id="rdQuestions" style="display:none">
+    <p style="font-size:13px">Answer clarifying questions, then re-analyze:</p>
+    <div id="rdQInputs"></div>
+    <button onclick="rdAnalyzeWithAnswers()">Submit answers</button>
+  </div>
+  <div id="rdReq" style="margin-top:8px"></div>
+  <button id="rdResearchBtn" style="display:none;margin-top:8px" onclick="rdResearch()">Start R&D Research (stream)</button>
+  <pre id="rdResearchOut"></pre>
+</div>
+
+<h2>Web search (direct)</h2>
+<div class="card">
+  <p style="font-size:12px;color:#666">Directly tests <code>POST /tools/search</code> (and <code>GET /tools/search?query=...</code> for browser). Shows <code>enabled:false</code> when no key/URL is set — that's RAG-only mode, not an error. Uses <code>backend/app/tools/search.py:99</code>.</p>
+  <label>Query <input id="webQ" value="latest transformer attention optimization 2024"></label>
+  <div style="margin-top:8px;display:flex;gap:8px">
+    <button onclick="webSearchPost()">POST /tools/search</button>
+    <button class="secondary" onclick="webSearchGet()">GET /tools/search</button>
+    <button class="secondary" onclick="webSearchStatus()">Status</button>
+  </div>
+  <pre id="webOut"></pre>
+  <p style="font-size:12px;color:#666;margin-top:8px">R&D fallback: when RAG hits &lt;2, the R&D subagents auto-append web results (backend/app/rd/subagent.py:36) — no extra call needed. Test that via the R&D tab above.</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+function headers(){ return {"Authorization":"Bearer "+$("apiToken").value.trim() } }
+function api(path){ return $("apiUrl").value.trim().replace(/\/$/,"")+path }
+function log(el, msg, cls=""){ const n=$(el); n.textContent=msg; n.className=cls }
+
+async function checkHealth(){
+  log("health","…");
+  try{ const r=await fetch(api("/health"), {headers:headers()}); const j=await r.json(); log("health", r.ok? "OK "+JSON.stringify(j): "HTTP "+r.status+" "+JSON.stringify(j), r.ok?"ok":"err"); }catch(e){ log("health","ERR "+e,"err") }
+}
+async function listDocs(){
+  log("docsOut","loading…");
+  try{ const r=await fetch(api("/documents"), {headers:headers()}); const j=await r.json(); $("docsOut").textContent=JSON.stringify(j,null,2); }catch(e){ $("docsOut").textContent="ERR "+e }
+}
+async function uploadDoc(){
+  const f=$("pdfFile").files[0]; if(!f) return alert("pick a PDF");
+  const fd=new FormData(); fd.append("file", f, f.name); fd.append("metadata", JSON.stringify({title:$("docTitle").value||f.name}));
+  log("docsOut","uploading…");
+  try{ const r=await fetch(api("/documents"), {headers:headers(), method:"POST", body:fd}); const j=await r.json(); $("docsOut").textContent=JSON.stringify(j,null,2); }catch(e){ $("docsOut").textContent="ERR "+e }
+}
+async function ask(){
+  const q=$("qQuestion").value.trim(); if(!q) return alert("ask a question");
+  $("qSources").innerHTML=""; $("qAnswer").textContent="loading…";
+  try{
+    const r=await fetch(api("/query"), {headers:{...headers(),"Content-Type":"application/json"}, method:"POST", body:JSON.stringify({question:q, k: +$("qK").value||4, k_images: +$("qKi").value||0})});
+    if(!r.ok){ $("qAnswer").textContent="HTTP "+r.status+" "+await r.text(); return; }
+    const reader=r.body.getReader(); const dec=new TextDecoder(); let buf="", first=true;
+    while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); let lines=buf.split("\n"); buf=lines.pop(); for(const line of lines){ if(!line.trim()) continue; const evt=JSON.parse(line);
+        if(evt.type==="sources"||evt.items){ const items=evt.items||[]; $("qSources").innerHTML=items.map(it=> it.kind==="image"? `[img page ${it.page} score ${it.score}] <a href="${api("/files/"+it.image_url.replace("/files/",""))}" target="_blank">${it.image_url}</a>` : `[page ${it.page} score ${it.score}] ${it.content}` ).join("<br>"); }
+        else if(evt.type==="text"){ $("qAnswer").textContent+=(evt.delta||""); }
+      } }
+  }catch(e){ $("qAnswer").textContent="ERR "+e }
+}
+
+let lastRequirements=null;
+async function rdAnalyze(){
+  const idea=$("rdIdea").value.trim(); if(!idea) return alert("enter idea");
+  log("rdAnalyzeOut","…");
+  try{
+    const r=await fetch(api("/rd/analyze"), {headers:{...headers(),"Content-Type":"application/json"}, method:"POST", body:JSON.stringify({idea})});
+    const j=await r.json(); $("rdAnalyzeOut").textContent=JSON.stringify(j,null,2);
+    if(!j.ready && j.questions){ renderQuestions(j.questions); lastRequirements=j.draft||null; } else if(j.ready){ lastRequirements=j.requirements; showReq(j.requirements); }
+  }catch(e){ $("rdAnalyzeOut").textContent="ERR "+e }
+}
+function renderQuestions(qs){
+  const c=$("rdQuestions"); c.style.display="block"; const box=$("rdQInputs"); box.innerHTML="";
+  qs.forEach((q,i)=>{ const d=document.createElement("div"); d.innerHTML=`<label>Q${i+1}: ${q}<input id="rdAns${i}" style="margin-top:4px"></label>`; box.appendChild(d); });
+}
+async function rdAnalyzeWithAnswers(){
+  const qs=JSON.parse($("rdAnalyzeOut").textContent).questions||[]; const answers=qs.map((_,i)=> $("rdAns"+i).value.trim()).filter(Boolean);
+  const idea=$("rdIdea").value.trim();
+  log("rdAnalyzeOut","…");
+  try{
+    const r=await fetch(api("/rd/analyze"), {headers:{...headers(),"Content-Type":"application/json"}, method:"POST", body:JSON.stringify({idea, answers})});
+    const j=await r.json(); $("rdAnalyzeOut").textContent=JSON.stringify(j,null,2);
+    if(j.ready){ lastRequirements=j.requirements; $("rdQuestions").style.display="none"; showReq(j.requirements); }
+  }catch(e){ $("rdAnalyzeOut").textContent="ERR "+e }
+}
+function showReq(req){ $("rdReq").innerHTML="<b>Requirements ready</b><pre>"+JSON.stringify(req,null,2)+"</pre>"; $("rdResearchBtn").style.display="inline-block"; }
+
+async function rdResearch(){
+  if(!lastRequirements) return alert("analyze first");
+  $("rdResearchOut").textContent="streaming…\n";
+  try{
+    const r=await fetch(api("/rd/research"), {headers:{...headers(),"Content-Type":"application/json"}, method:"POST", body:JSON.stringify({requirements:lastRequirements, idea:$("rdIdea").value.trim()})});
+    if(!r.ok){ $("rdResearchOut").textContent="HTTP "+r.status+" "+await r.text(); return; }
+    const reader=r.body.getReader(); const dec=new TextDecoder(); let buf="";
+    while(true){ const {done,value}=await reader.read(); if(done) break; buf+=dec.decode(value,{stream:true}); let lines=buf.split("\n"); buf=lines.pop(); for(const line of lines){ if(!line.trim()) continue; const evt=JSON.parse(line); $("rdResearchOut").textContent+=JSON.stringify(evt,null,2)+"\n\n"; $("rdResearchOut").scrollTop=$("rdResearchOut").scrollHeight; } }
+  }catch(e){ $("rdResearchOut").textContent+="ERR "+e }
+}
+async function webSearchPost(){
+  const q=$("webQ").value.trim(); if(!q) return alert("enter query");
+  log("webOut","POST …");
+  try{ const r=await fetch(api("/tools/search"), {headers:{...headers(),"Content-Type":"application/json"}, method:"POST", body:JSON.stringify({query:q, k:5})}); const j=await r.json(); $("webOut").textContent=JSON.stringify(j,null,2); }catch(e){ $("webOut").textContent="ERR "+e }
+}
+async function webSearchGet(){
+  const q=$("webQ").value.trim(); if(!q) return alert("enter query");
+  log("webOut","GET …");
+  try{ const r=await fetch(api("/tools/search?query="+encodeURIComponent(q)+"&k=5"), {headers:headers()}); const j=await r.json(); $("webOut").textContent=JSON.stringify(j,null,2); }catch(e){ $("webOut").textContent="ERR "+e }
+}
+async function webSearchStatus(){
+  log("webOut","…");
+  try{ const r=await fetch(api("/tools/search/status"), {headers:headers()}); const j=await r.json(); $("webOut").textContent=JSON.stringify(j,null,2); }catch(e){ $("webOut").textContent="ERR "+e }
+}
+</script>
+</body>
+</html>

@@ -66,5 +66,12 @@ class Settings(BaseSettings):
     memory_top_k: int = 5
     memory_ttl_s: int = 86400
 
+    # Search tools — web search via Tavily/Serper/generic endpoint (optional)
+    tavily_api_key: str = ""
+    serper_api_key: str = ""
+    search_service_url: str = ""
+    search_service_token: str = ""
+    search_max_results: int = 5
+
 
 settings = Settings()

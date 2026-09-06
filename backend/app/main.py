@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from openai import AsyncOpenAI
 
 from .api import router
@@ -25,6 +26,13 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="ProdRag", lifespan=lifespan)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 app.include_router(router)
 
 

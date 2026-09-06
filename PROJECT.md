@@ -1,6 +1,6 @@
-# ProdRag — R&D Demo System (Project Spec)
+# ProdRag — R&D Demo System (Project Spec) — v1 (idea -> research -> code)
 
-Living spec for the ProdRag project. Read this first, then `README.md` for run instructions. This document describes the rescope from a *research assistant* into an **R&D demo system** that turns research papers/ideas into **runnable artifacts** (`demo.py` + `requirements.txt`) via a staged research pipeline.
+Living spec for the ProdRag project. Read this first, then `README.md` for run instructions. This document describes the v1 system: a **R&D demo factory** that turns research papers/ideas into **runnable, sandbox-tested artifacts** (`demo.py` + `requirements.txt` + `test_demo.py`) via `idea -> research -> code`.
 
 ---
 
@@ -19,17 +19,17 @@ idea -> [Analyzer] -> Requirements -> [Orchestrator -> Subagents x5] -> [Validat
 
 ### Non-goals (for now)
 
-- No web search integration (phase 2, optional).
 - No fine-tuning; all model behavior is prompt/tool-driven.
 - No user accounts/auth beyond the single `PRODRAG_API_TOKEN`.
 - DeepSeek is the chat model and is **text-only** (no vision, no embeddings API).
-- v1 demo is a minimal `demo.py` script (or notebook) on toy data — Gradio/Docker are v2.
+- v1 demo is minimal `demo.py` (toy data, `python`/`numpy`) + `requirements.txt` + `test_demo.py` — Gradio/Docker are v2.
+- Web search is optional (`backend/app/tools/search.py`); RAG-only when all search keys unset.
 
 ---
 
-## 2. Current state (verified 2026-08-30)
+## 2. Current state (verified 2026-09-01 — v1: idea -> research -> code, 137 tests)
 
-The system is a working multimodal RAG pipeline extended with the R&D research pipeline. Everything below is running/verified except where noted.
+The system is a working multimodal RAG pipeline extended with the R&D research pipeline and the **code generation pipeline** (artifact -> sandbox-tested demo). Everything below is running/verified except where noted.
 
 ### 2.1 Stack
 
@@ -45,15 +45,17 @@ The system is a working multimodal RAG pipeline extended with the R&D research p
 | Vision embeddings | **Modal GPU** CLIP `ViT-B-32` (512 dims), `deploy/modal/clip_service.py` | remote-first in `backend/app/core/embeddings/vision.py`; local torch fallback |
 | PDF parsing    | PyMuPDF (`backend/app/ingest/parser/pdf.py`) | text + page render + embedded figures |
 | RAG Tool       | thin wrapper `backend/app/tools/rag.py` over `backend/app/rag/retrieval.py` | shared by /query, legacy /research, and R&D subagents |
+| Search Tool    | `backend/app/tools/search.py` (Tavily/Serper/generic proxy, `enabled()` false → no-op) | optional web fallback when RAG `<2`, legacy agent second tool |
 | R&D Pipeline   | `backend/app/rd/{analyzer,orchestrator,subagent,validator,artifacts,pipeline}.py` | idea -> research -> artifact |
-| Frontend       | Streamlit (`frontend/app.py`) | Documents + Ask + Research + R&D tabs |
-| Eval           | `eval/recall.py` (Recall@k vs golden set) | artifact faithfulness planned |
+| Code Pipeline  | `backend/app/code/{analyzer,orchestrator,subagent,tester,sandbox,pipeline}.py` | artifact -> sandbox-tested demo (`demo.py`+`test_demo.py`) |
+| Frontend       | Streamlit (`frontend/app.py`) + `frontend/simple_test.html` | Documents + Ask + Research + R&D + simple test UIs |
+| Eval           | `eval/recall.py` (Recall@k vs golden set) | artifact/code faithfulness planned |
 
 ### 2.2 Repo layout
 
 ```
 backend/app/           # FastAPI + worker package (organized by concern)
-  main.py              # app wiring: lifespan, /health, mounts api router
+  main.py              # app wiring: lifespan, /health, mounts api router + CORS
   config.py            # pydantic-settings, env prefix PRODRAG_
   schemas.py           # QueryRequest, ResearchRequest + R&D schemas
   api/                 # HTTP layer: routers per resource
@@ -62,10 +64,12 @@ backend/app/           # FastAPI + worker package (organized by concern)
     files.py           # /files/{object_key} proxy
     query.py           # /query
     research.py        # /research (legacy single-loop agent)
-    rd.py              # /rd/analyze, /rd/research (new pipeline)
+    rd.py              # /rd/analyze, /rd/research (R&D pipeline)
+    code.py            # /code/analyze, /code/generate (code pipeline)
+    tools.py           # /tools/search (web search probe, GET+POST)
   core/                # infrastructure
     storage.py         # Supabase Storage REST client (httpx, secret API key)
-    db.py              # Supabase Postgres CRUD (documents, parts, conv, episodes, research_runs)
+    db.py              # Supabase Postgres CRUD (documents, parts, conv, episodes, research_runs, code_runs)
     schema.sql         # DDL for the relational layer (apply via SQL editor / psql)
     vectorstore.py     # AsyncQdrantClient, ensure_collections, search/upsert (+episodes)
     embeddings/{text,vision}.py
@@ -73,14 +77,23 @@ backend/app/           # FastAPI + worker package (organized by concern)
     retry.py           # retry_async (exp backoff, transient-predicate)
   tools/
     rag.py             # rag_search() wrapper — the packaged RAG tool
+    search.py          # web_search() via Tavily/Serper/generic proxy (enabled() false → no-op)
   rd/                  # R&D pipeline (idea -> research -> artifact)
     schemas.py         # Requirements, Direction, ResearchSummary, Validation, ResearchArtifact
     analyzer.py        # second-request handshake, no KB
     orchestrator.py    # fixed 5-direction fan-out plan
-    subagent.py        # kb_search + synthesis per direction
+    subagent.py        # kb_search + web fallback → synthesis per direction
     validator.py       # LLM-as-judge, emit-with-risks
     artifacts.py       # demo_spec + acceptance_criteria builder
     pipeline.py        # rd_research() — top-level orchestrator
+  code/                # Code pipeline (artifact -> sandbox-tested demo)
+    schemas.py         # CodingSpec, FileTask, GeneratedFile, SandboxResult, CodeArtifact
+    analyzer.py        # artifact -> CodingSpec (json_object, no KB)
+    orchestrator.py    # CodingSpec/artifact -> [FileTask] fixed demo.py|requirements.txt|test_demo.py
+    subagent.py        # one LLM call per FileTask
+    tester.py          # CodingSpec + acceptance_criteria -> test_demo.py (not from code)
+    sandbox.py         # tmpdir + subprocess (pip/pytest/demo) -> SandboxResult
+    pipeline.py        # code_generate() — analyzer->orchestrator->subagents->tester->sandbox
   ingest/              # ingestion pipeline
     pipeline.py        # arq job ingest_document (parse -> embed -> index)
     chunking.py        # langchain text splitter
@@ -88,13 +101,13 @@ backend/app/           # FastAPI + worker package (organized by concern)
   rag/                 # RAG layer (retrieval + answering)
     retrieval.py       # search_kb() + source_items() — shared by /query and the agent tool
     answer.py          # answer(): sources + text deltas (NDJSON)
-  agent.py             # research(): single tool-calling loop (legacy, kept)
+  agent.py             # research(): single tool-calling loop (now with optional web_search tool)
   memory.py            # conv (Supabase messages) + episodic (Qdrant + Supabase)
   worker.py            # arq WorkerSettings
-backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py
+backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_search.py (137 tests)
 deploy/docker-compose.yml   # qdrant + redis + api + worker (no MinIO anymore)
-deploy/modal/          # embed_service.py, clip_service.py, manage.sh, README.md
-frontend/              # Streamlit app.py + api.py (Documents / Ask / Research / R&D tabs)
+deploy/modal/          # embed_service.py, clip_service.py, search_proxy.py example, manage.sh, README.md
+frontend/              # Streamlit app.py + api.py + simple_test.html (Documents / Ask / Research / R&D + simple test UIs)
 eval/                  # recall.py + golden.jsonl
 PROJECT.md             # this file
 ```
@@ -123,12 +136,14 @@ System of record for entities & lifecycle; Qdrant stays vector-only. DDL lives i
 | `episodes`  | episodic memory metadata (vector stays in Qdrant `episodes`) |
 | `research_runs` | R&D pipeline runs: `id, session_id, requirements jsonb, status, created_at` |
 | `research_artifacts` | materialized artifacts: `run_id fk, artifact jsonb, validation jsonb, created_at` |
+| `code_runs` | code generation runs: `id, artifact_run_id?, coding_spec jsonb, files jsonb, status, created_at` |
+| `code_artifacts` | code artifacts: `run_id fk, artifact jsonb (CodeArtifact), sandbox jsonb, created_at` |
 
-Env: `PRODRAG_DATABASE_URL` (Postgres connection string). Driver: `supabase` REST client (`core/db.py`). Endpoints: `GET /documents`, `DELETE /documents/{id}`, `/rd/*`.
+Env: `PRODRAG_DATABASE_URL` (Postgres connection string). Driver: `supabase` REST client (`core/db.py`). Endpoints: `GET /documents`, `DELETE /documents/{id}`, `/rd/*`, `/code/*`, `/tools/search`.
 
 ### 2.4 API (current)
 
-All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN`.
+All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN` (except `GET /health`).
 
 - `GET  /health`
 - `POST /documents` — multipart `file` + optional `metadata` (JSON str) → `{document_id, job_id}` (async ingest). Dedups by SHA-256 of the file: an identical previously-ingested upload returns `{document_id, job_id: null, duplicate: true}` instead of re-ingesting.
@@ -136,9 +151,12 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN`.
 - `GET  /documents/{id}/status` — `{status, text_chunks, images, error}`
 - `GET  /documents` / `DELETE /documents/{id}` — list / delete
 - `POST /query` — `{question, k, k_images}` → NDJSON stream: `{"type":"sources","items":[...]}` then `{"type":"text","delta":"..."}`
-- `POST /research` — legacy single-loop agent: `{question, session_id?, k, k_images}` → NDJSON stream: `memory/session`, `agent/tool_call`, `sources`, `agent/tool_result`, `text` (final answer), `memory/saved`.
-- `POST /rd/analyze` — stateless second-request handshake: `{idea, session_id?, answers?: string[]}` → `{ready: bool, requirements?: Requirements, questions?: string[]}`. Analyzer has **no KB access** — max 2 rounds. First call without `answers` may return `ready:false` with 1–3 clarifying questions; client re-POSTs with `answers`.
-- `POST /rd/research` — R&D pipeline: `{requirements, session_id?, idea?}` → NDJSON stream: `orchestrator/plan`, `subagent/start`, `subagent/result` (x5, parallel), `validator/result`, `artifact`. Fixed taxonomy: `core_algorithm`, `datasets`, `baselines`, `implementation_details`, `evaluation`. Validator always emits an artifact (emit-with-risks); never blocks.
+- `POST /research` — legacy single-loop agent (now with optional `web_search` tool when `PRODRAG_TAVILY_API_KEY` etc. set): `{question, session_id?, k, k_images}` → NDJSON stream: `memory/session`, `agent/tool_call`, `sources`, `agent/tool_result`, `text` (final answer), `memory/saved`.
+- `POST /rd/analyze` — stateless second-request handshake: `{idea, session_id?, answers?: string[]}` → `{ready: bool, requirements?: Requirements, questions?: string[]}`. Analyzer has **no KB access** — max 2 rounds.
+- `POST /rd/research` — R&D pipeline: `{requirements, session_id?, idea?}` → NDJSON stream: `orchestrator/plan`, `subagent/start`, `subagent/result` (x5), `validator/result`, `artifact` (ResearchArtifact). Fixed taxonomy: `core_algorithm`, `datasets`, `baselines`, `implementation_details`, `evaluation`. Validator always emits (emit-with-risks); subagents auto-append `web_search` when RAG `<2`.
+- `POST /code/analyze` — code analyzer: `{artifact: ResearchArtifact}` → `{file_tasks, test_intents, dependencies, risks, coding_spec:{...}}`. One `json_object` LLM call, no KB, fallback on failure.
+- `POST /code/generate` — code pipeline: `{artifact: ResearchArtifact, session_id?}` → NDJSON stream: `code/plan`, `code/file_start|file_result` x3 (`demo.py`, `requirements.txt`, `test_demo.py`), `tester/result` (from `CodingSpec`+`acceptance_criteria`, not from code), `sandbox/start|result` (`{passed, pytest_log, demo_log, returncode}`), `code/artifact` (`CodeArtifact{files, test_file, sandbox}`). Persisted to `code_runs`/`code_artifacts` (best-effort).
+- `POST /tools/search` — web search probe: `{query, k?}` → `{"enabled", "results":[{title,url,snippet}], "formatted"}`; `GET /tools/search?query=&k=` and `GET /tools/search/status` for browser probing (avoids 405).
 - `GET  /files/{object_key:path}` — fetch a stored figure (proxies storage)
 
 ### 2.5 Env inventory (`PRODRAG_` prefix)
@@ -151,7 +169,8 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN`.
 `qdrant_api_key`, `collection_text`, `collection_image`, `redis_url`,
 `supabase_url`, `supabase_secret_key`,
 `storage_bucket`, `database_url`, `chunk_size`, `chunk_overlap`, `page_dpi`, `min_figure_area`,
-`retrieval_hybrid_k`, `rerank_service_url`, `rerank_service_token`, `rerank_model`.
+`retrieval_hybrid_k`, `rerank_service_url`, `rerank_service_token`, `rerank_model`,
+`tavily_api_key`, `serper_api_key`, `search_service_url`, `search_service_token`, `search_max_results`.
 
 Two `.env` files: repo-root `.env` (used by docker compose) and `backend/.env` (used when running uvicorn from `backend/`). Both gitignored.
 
@@ -174,28 +193,29 @@ Two `.env` files: repo-root `.env` (used by docker compose) and `backend/.env` (
 
 ---
 
-## 3. Target architecture — R&D demo system
+## 3. Target architecture — R&D demo system (v1)
 
 ```
                          ┌──────────────────────────────────────────────────┐
                          │                 FastAPI (api)                     │
-                         │  /rd/analyze  /rd/research  /query  /research    │
-                         │  /documents  /files  /health                     │
+                         │  /rd/analyze  /rd/research  /code/*  /query      │
+                         │  /research  /documents  /files  /tools/search    │
+                         │  /health                                          │
                          └───────┬──────────────────────┬───────────────────┘
                                  │                      │
                ┌─────────────────┘                      └─────────────────┐
-               │ R&D Pipeline (idea -> research -> artifact)              │ Legacy / general
+               │ R&D Pipeline (idea -> artifact)          │ Code Pipeline (artifact -> demo)
                │                                                          │
    ┌───────────▼───────────┐    ┌──────────────────┐    ┌───────────────▼────┐
    │ Analyzer              │    │ Orchestrator      │    │ agent.py           │
    │ no KB, 2-req handshake│───►│ fixed 5-direction │───►│ single-loop        │
-   │ Requirements or       │    │ plan              │    │ kb_search loop     │
+   │ Requirements or       │    │ plan              │    │ kb_search+web_search│
    │ clarify questions     │    └────────┬─────────┘    └────────────────────┘
    └───────────────────────┘             │ fan-out (asyncio.gather)
                               ┌──────────┼──────────┐
                               │          │          │
                        ┌──────▼──┐ ┌────▼────┐ ┌───▼─────┐  x5
-                       │Subagent │ │Subagent │ │Subagent │  each: kb_search
+                       │Subagent │ │Subagent │ │Subagent │  each: kb_search+web fallback
                        │core_algo│ │datasets │ │  ...    │  + synthesis
                        └────┬────┘ └────┬────┘ └───┬─────┘
                             └───────────┼──────────┘
@@ -205,24 +225,47 @@ Two `.env` files: repo-root `.env` (used by docker compose) and `backend/.env` (
                               │ emit-with-risks  │  coverage + feasibility
                               └────────┬─────────┘
                                        ▼
-                              ┌──────────────────┐
-                              │ ResearchArtifact │  demo_spec + sources +
-                              │ (handoff to     │  acceptance_criteria
-                              │  coding module)  │
-                              └──────────────────┘
+                              ┌──────────────────┐       ┌──────────────────┐
+                              │ ResearchArtifact │──────►│ Code Analyzer    │ artifact -> CodingSpec
+                              │ demo_spec +      │       └────────┬─────────┘
+                              │ acceptance_crit. │                ▼
+                              └──────────────────┘       ┌──────────────────┐
+                                                         │ Code Orchestr.   │ fixed 3 files
+                                                         │ demo.py|req.txt  │
+                                                         │ test_demo.py     │
+                                                         └────────┬─────────┘
+                                                                  │ fan-out
+                                                         ┌────────┼────────┐
+                                                         │        │        │
+                                                  ┌──────▼──┐ ┌──▼────┐ ┌▼────────┐ x3
+                                                  │Subagent │ │Subagent│ │Tester   │ one LLM/file
+                                                  │ demo.py │ │req.txt │ │test_*.py│ from spec
+                                                  └────┬────┘ └──┬────┘ └────┬────┘
+                                                       └─────────┼─────────┘
+                                                                 ▼
+                                                         ┌──────────────────┐
+                                                         │ Sandbox          │ tmpdir+subprocess
+                                                         │ pip/pytest/demo  │ → SandboxResult
+                                                         └────────┬─────────┘
+                                                                  ▼
+                                                         ┌──────────────────┐
+                                                         │ CodeArtifact     │ files+test+sandbox
+                                                         └──────────────────┘
 
      RAG Tool (tools/rag.py) ──► search_kb() [hybrid dense+BM25 + rerank + CLIP]
+     Search Tool (tools/search.py) ──► web_search() via Tavily/Serper/generic (enabled() false → no-op)
      Memory (memory.py) ───────► conv:{session} + episodes (Qdrant)
      Storage ──────────────────► Qdrant (text_chunks, image_chunks, episodes)
-                                 Redis (queue, conv) / Supabase Storage / DB
+                                 Redis (queue, conv) / Supabase Storage / DB (research_runs/artifacts, code_runs/artifacts)
 ```
 
 **Layers:**
 
-1. **RAG Tool** (packaged) — `backend/app/tools/rag.py` wraps `backend/app/rag/retrieval.py:search_kb`. Used by `/query`, legacy `/research`, and all R&D subagents. No duplication.
-2. **R&D Pipeline** — `backend/app/rd/` — staged: analyzer -> orchestrator -> subagents -> validator -> artifact.
-3. **Memory** — conversation (per session, `conv:{id}`) + episodic (`episodes` collection).
-4. **Coding module** (next) — consumes `ResearchArtifact` and emits `demo.py + requirements.txt` (v1: script on toy data).
+1. **RAG Tool** (packaged) — `backend/app/tools/rag.py` wraps `backend/app/rag/retrieval.py:search_kb`. Used by `/query`, legacy `/research`, and all R&D subagents.
+2. **Search Tool** (optional) — `backend/app/tools/search.py` `web_search()` via Tavily/Serper/generic proxy; `enabled()` false → no-op. R&D subagents auto-append web hits when RAG `<2`; legacy agent exposes `web_search` as second tool when configured.
+3. **R&D Pipeline** — `backend/app/rd/` — analyzer -> orchestrator -> subagents -> validator -> artifact.
+4. **Code Pipeline** — `backend/app/code/` — analyzer -> orchestrator -> subagents -> tester -> sandbox -> CodeArtifact. Python-only `demo.py` + `requirements.txt` + `test_demo.py`, toy data, sandbox-verified.
+5. **Memory** — conversation (per session, `conv:{id}`) + episodic (`episodes` collection).
 
 ---
 
@@ -322,31 +365,56 @@ async def rd_research(requirements: Requirements, session_id: str | None, idea: 
     yield {"type":"artifact","data":artifact.model_dump()}
 ```
 
-### 4.7 Tool registry (RAG packaging)
+### 4.7 Tool registry (RAG + Search)
 
 | Module | Function | Used by |
 |--------|----------|---------|
 | `backend/app/tools/rag.py:rag_search` | `search_kb(question, k, k_images)` | `/query`, `agent.py:kb_search`, `rd/subagent.py` |
+| `backend/app/tools/search.py:web_search` | `web_search(query, k)` via Tavily/Serper/generic, `enabled()` false → [] | `agent.py:web_search` (when configured), `rd/subagent.py` (fallback when RAG `<2`) |
 
 `get_figure` remains cut (YAGNI) — figures are `object_key` refs until a vision model is wired (`chat_supports_images=true`).
 
-### 4.8 Streaming protocol (NDJSON, consistent with `/research`)
+### 4.8 Streaming protocol — R&D (NDJSON, consistent with `/research`)
 
 ```
 {"type":"orchestrator","event":"plan","directions":[...]}
 {"type":"subagent","event":"start","direction_id":"core_algorithm","question":"..."}
 {"type":"subagent","event":"result","summary":{...}}
-... (x5, parallel — order reflects completion)
+... (x5, sequential in current impl — spec said parallel)
 {"type":"validator","event":"result","validation":{...}}
 {"type":"artifact","data":{...}}
 ```
 
 Legacy `/research` events (`memory/session`, `agent/tool_call`, etc.) remain unchanged.
 
-### 4.9 Model notes
+### 4.9 Streaming protocol — Code (NDJSON)
+
+```
+{"type":"code","event":"plan","coding_spec":{...},"file_tasks":[...]}
+{"type":"code","event":"file_start","path":"demo.py","goal":"..."}
+{"type":"code","event":"file_result","file":{"path":"demo.py","content":"..."}}
+... x3 (demo.py, requirements.txt, test_demo.py)
+{"type":"tester","event":"result","file":{"path":"test_demo.py","content":"..."}}
+{"type":"sandbox","event":"start"}
+{"type":"sandbox","event":"result","sandbox":{"passed":bool,"pytest_log":"","demo_log":"","returncode":0}}
+{"type":"code","event":"artifact","data":{... CodeArtifact ...},"files":[...]}
+```
+
+### 4.10 Code pipeline design — `backend/app/code/`
+
+* **Analyzer** (`code/analyzer.py`): `analyze_artifact(client, artifact: ResearchArtifact|dict) -> CodingSpec{file_tasks, test_intents, dependencies, risks}` — one `json_object` LLM call, no KB/RAG, fallback to `demo.py|requirements.txt|test_demo.py` + `acceptance_criteria` when LLM fails (emit-with-risks).
+* **Orchestrator** (`code/orchestrator.py`): pure function `build_code_plan(CodingSpec|ResearchArtifact) -> list[FileTask{path, goal, context_slice}]` — fixed v1 set `demo.py, requirements.txt, test_demo.py`, deterministic sort, handles both `CodingSpec` and raw `ResearchArtifact` for flexibility.
+* **Subagent** (`code/subagent.py`): `run_file_task(client, FileTask) -> GeneratedFile{path, content}` — one LLM call per file, prompt `path + goal + context_slice`, strips markdown fences, fallback per file (`print('hello demo')`, `numpy\n`, `def test_demo(): assert True`).
+* **Tester** (`code/tester.py`): `generate_tests(client, CodingSpec|dict, ResearchArtifact|dict) -> GeneratedFile{path="test_demo.py"}` — one LLM call **from `CodingSpec.test_intents + demo_spec.acceptance_criteria`**, not from generated code (avoids tautology). Accepts either arg order. Fallback `def test_demo(): subprocess.run([sys.executable, 'demo.py'])`.
+* **Sandbox** (`code/sandbox.py`): `run_sandbox(files: [GeneratedFile|dict], timeout=15) -> SandboxResult{passed, pytest_log, demo_log, returncode, runtime_ms}` — `tempfile.TemporaryDirectory` + `asyncio.to_thread(subprocess.run)` (pip 60s, pytest+demo 30s), never raises, timeout → `passed=false`. `ponytail: subprocess without cgroup/network ns, switch to docker+gvisor if untrusted`.
+* **Pipeline** (`code/pipeline.py`): `code_generate(client, artifact, session_id?)` — `analyze_artifact` → `build_code_plan` → `run_file_task` x3 (sequential) → `generate_tests` → `run_sandbox` → `CodeArtifact{artifact_run_id, coding_spec, files, test_file, sandbox, created_at}`. Streams events above, best-effort `code_runs`/`code_artifacts` persist (swallows DB errors like R&D).
+* **Schemas** (`code/schemas.py`): `FileTask`, `CodingSpec`, `GeneratedFile`, `SandboxResult`, `CodeArtifact`, `CodeAnalyzeRequest/Response`, `CodeGenerateRequest`.
+
+### 4.11 Model notes
 
 - `agent_model` (default `deepseek-v4-flash`) supports OpenAI-format tool calling. `deepseek-v4-pro` available for harder planning.
 - DeepSeek is text-only: figures are `object_key`/URL refs, never embedded into the model context unless `chat_supports_images` is later set with a vision model.
+- Code subagents reuse `settings.chat_model` (no separate critic model); single LLM call per file keeps cost `~3` calls + analyzer + tester = 5 LLM calls total per code generation.
 
 ---
 
@@ -385,8 +453,8 @@ Legacy `/research` events (`memory/session`, `agent/tool_call`, etc.) remain unc
 
 - Qdrant collection `episodes` (see §5.2) — implemented.
 - Redis keys: `conv:{session_id}` (implemented), `doc:{document_id}` (existing). `research:{research_id}` event-log only if the async job variant is added.
-- **New tables:** `research_runs` / `research_artifacts` (see §2.3b). Payload JSON conventions: keep keys flat and snake_case; store `object_key` (not full URLs) for figures.
-- Payload JSON conventions: keep keys flat and snake_case; store `object_key` (not full URLs) for figures.
+- **New tables:** `research_runs` / `research_artifacts` + `code_runs` / `code_artifacts` (see §2.3b). Payload JSON conventions: keep keys flat and snake_case; store `object_key` (not full URLs) for figures.
+- Sandboxed demos are **not** stored in Qdrant — code artifacts live in Postgres (`code_runs`/`code_artifacts`) as `jsonb` (files as `[{path, content}]`), with optional Supabase Storage `code/{run_id}/...` for large outputs (YAGNI for v1).
 
 ---
 
@@ -396,12 +464,15 @@ Implemented:
 
 - `POST /research` — `{question, session_id?, k, k_images}` → NDJSON agent events + final answer; auto-saves an episode and appends conversation.
 - `POST /rd/analyze` — `{idea, session_id?, answers?: string[]}` → `{ready, requirements?, questions?}` (second-request handshake, analyzer has no KB).
-- `POST /rd/research` — `{requirements, session_id?, idea?}` → NDJSON `orchestrator/plan`, `subagent/*` (x5, parallel), `validator/result`, `artifact`. Fixed 5-direction taxonomy, validator emit-with-risks.
+- `POST /rd/research` — `{requirements, session_id?, idea?}` → NDJSON `orchestrator/plan`, `subagent/*` (x5), `validator/result`, `artifact` (ResearchArtifact). Fixed 5-direction taxonomy, validator emit-with-risks; subagents auto-append `web_search` when RAG `<2`.
+- `POST /code/analyze` — `{artifact: ResearchArtifact}` → `{file_tasks, test_intents, dependencies, risks, coding_spec}`. One `json_object` LLM call, no KB, fallback on failure.
+- `POST /code/generate` — `{artifact: ResearchArtifact, session_id?}` → NDJSON `code/plan`, `code/file_start|file_result` x3, `tester/result`, `sandbox/start|result`, `code/artifact` (CodeArtifact). Sandbox is `tmpdir+subprocess` (pip/pytest/demo), never raises.
+- `POST /tools/search` — `{query, k?}` → `{"enabled","results":[{title,url,snippet}],"formatted"}`; `GET /tools/search?query=&k=` and `GET /tools/search/status` for browser probing (avoids 405). Web search via Tavily/Serper/generic proxy, `[]` when unconfigured.
 
 Not built yet (YAGNI until requested):
 
 - `/conversations` CRUD, `/memory/search`, `/research-async` + event replay — only when a conversation-list UI, a Memory tab, or >60s research topics actually need them.
-- `/rd/runs` listing — add when run history UI is wanted.
+- `/rd/runs` / `/code/runs` listing — add when run history UI is wanted.
 
 ---
 
@@ -417,7 +488,12 @@ retrieval_hybrid_k=12               # dense+BM25 first-pass size (RRF)
 rerank_service_url=""               # optional cross-encoder reranker (Modal)
 rerank_service_token=""
 rerank_model=BAAI/bge-reranker-base
-# R&D pipeline reuses agent_model and retrieval_hybrid_k; no new env vars in v1
+tavily_api_key=""                   # PRODRAG_TAVILY_API_KEY (web_search, optional)
+serper_api_key=""                   # PRODRAG_SERPER_API_KEY
+search_service_url=""               # PRODRAG_SEARCH_SERVICE_URL (generic proxy POST {query,k} -> {results:[{title,url,snippet}]})
+search_service_token=""             # PRODRAG_SEARCH_SERVICE_TOKEN
+search_max_results=5                # PRODRAG_SEARCH_MAX_RESULTS
+# R&D + code pipelines reuse agent_model and retrieval_hybrid_k; no new env vars aside from search
 ```
 
 ---
@@ -429,13 +505,15 @@ Implemented:
 - **Research tab** — question input, `k`/`k_images` sliders, live transcript of agent events (`tool_call` / `tool_result` / `sources` figures+text), final answer, session tracking via the `memory/session` event.
 - **R&D tab** — idea input, analyzer clarifying questions (second-request handshake, inline form), live subagent progress (5 directions, streaming `subagent/result`), validator risks, and an expandable artifact view (`demo_spec`, `acceptance_criteria`, sources). Session tracking via `session_id` echo.
 - **Documents / Ask tabs** — unchanged.
+- **Simple test UIs** — `frontend/simple_test.html` (pure HTML/JS, no build — health, docs, RAG, R&D, `POST /tools/search`) and `frontend/simple_test_app.py` (minimal Streamlit, 3 tabs). Both use `fetch`/`requests` + NDJSON `reader.getReader()` loop.
 
 Not built yet (YAGNI until requested):
 
 - **Memory tab** (browse/search past episodes) and a session picker — only when browsing memory is actually wanted.
-- **Runs history** for R&D artifacts — only when artifact browsing is wanted.
+- **Runs history** for R&D/code artifacts — only when artifact browsing is wanted.
+- **Code tab** — full `code/generate` streaming UI (file previews, pytest/demo logs) — currently via `simple_test.html` code section and API directly.
 
-`frontend/api.py` gained `rd_analyze()` and `rd_research_stream()`.
+`frontend/api.py` gained `rd_analyze()`, `rd_research_stream()`, `code_analyze()`/`code_generate_stream()`-like helpers (via `simple_test.html` fetch), and `tools/search` probes.
 
 ---
 
@@ -455,11 +533,11 @@ Not built yet (YAGNI until requested):
 ## 11. Roadmap
 
 - **Phase 1 — agent loop (DONE).** `POST /research` streams `kb_search` tool calls → sources → answer; conversation + episodic memory auto-wired. Frontend Research tab. Tests: `test_agent.py`.
-- **Phase 2 — R&D research pipeline (THIS PHASE).** `POST /rd/analyze` (second-request handshake, no KB) + `POST /rd/research` (fixed 5-direction fan-out, parallel subagents, validator emit-with-risks, `ResearchArtifact` handoff). Frontend R&D tab. Tests: `test_rd_*.py`.
-- **Phase 3 — coding module.** Consumes `ResearchArtifact` and emits `demo.py + requirements.txt` (v1) with runnable `acceptance_criteria` checks.
+- **Phase 2 — R&D research pipeline (DONE).** `POST /rd/analyze` (second-request handshake, no KB) + `POST /rd/research` (fixed 5-direction fan-out, subagents with RAG+web fallback, validator emit-with-risks, `ResearchArtifact` handoff). Frontend R&D tab. `GET/POST /tools/search` (Tavily/Serper/generic, enabled() false → no-op) + CORS for `file://` test UI. Tests: `test_rd_*.py`, `test_search.py` (42+ tests).
+- **Phase 3 — coding module (DONE, v1).** `POST /code/analyze` (artifact → `CodingSpec`) + `POST /code/generate` (analyzer → orchestrator (fixed 3 files) → subagents (one LLM/file) → tester (from spec, not code) → sandbox (`tmpdir+subprocess` pip/pytest/demo) → `CodeArtifact`). Frontend via `simple_test.html`/`simple_test_app.py`. Tests: `test_code_*_spec.py` (44 tests). 137 tests total.
 - **Phase 4 — conversation UX + Memory tab.** Session picker / "new session" in the UI; `/conversations` endpoints only if a conversation list is wanted.
-- **Phase 5 — critic + web search (optional).** draft review for unsupported claims; `web_search` tool if requested.
-- **Phase 6 — eval for agentic quality.** extend `eval/` beyond recall@k: answer faithfulness (citation coverage) + R&D artifact faithfulness.
+- **Phase 5 — hardening.** Docker/gVisor sandbox, `GET /code/runs` history, Storage objects for large code artifacts, auto-retry on sandbox fail.
+- **Phase 6 — eval for agentic quality.** extend `eval/` beyond recall@k: answer faithfulness (citation coverage) + R&D artifact + code sandbox pass rate.
 
 ---
 
@@ -472,18 +550,26 @@ uv sync --extra dev --extra modal --extra frontend
 # infra (needs Supabase creds in .env first, see §2.7)
 docker compose -f deploy/docker-compose.yml up --build
 
-# apply schema (includes research_runs / research_artifacts)
+# apply schema (includes research_runs/artifacts + code_runs/artifacts)
 psql "$PRODRAG_DATABASE_URL" -f backend/app/core/schema.sql
 # or paste backend/app/core/schema.sql into Supabase SQL editor
 
-# tests
-uv run pytest
+# tests (137, pytest-asyncio)
+uv run pytest -q
 
 # frontend
-cd frontend && uv run streamlit run app.py
+cd frontend && uv run streamlit run app.py          # 4 tabs
+open frontend/simple_test.html                       # pure HTML/JS test UI (no build)
+# or
+cd frontend && uv run streamlit run simple_test_app.py  # minimal 3-tab test app
+
+# search proxy (optional — RAG-only when all search vars unset)
+# TAVILY:  PRODRAG_TAVILY_API_KEY=tvly-...  (no proxy)
+# or generic: PRODRAG_SEARCH_SERVICE_URL=http://localhost:8001/search  (POST {query,k} -> {results:[{title,url,snippet}]})
+# see deploy/search_proxy.py example
 
 # modal service lifecycle
 bash deploy/modal/manage.sh {status|stop|start}
 ```
 
-Blocked until the user supplies `PRODRAG_SUPABASE_URL` / `PRODRAG_SUPABASE_SECRET_KEY` and creates the `prodrag-assets` bucket.
+Blocked until the user supplies `PRODRAG_SUPABASE_URL` / `PRODRAG_SUPABASE_SECRET_KEY` and creates the `prodrag-assets` bucket. Search works offline (`enabled:false` → `[]`) without extra keys.

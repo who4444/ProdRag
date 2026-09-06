@@ -13,6 +13,7 @@ import json
 from . import memory
 from .config import settings
 from .rag.retrieval import search_kb, source_items
+from .tools.search import WEB_SEARCH_TOOL, format_results as format_web, web_search
 
 SYSTEM_PROMPT = (
     "You are a research orchestrator with a knowledge base of ingested PDFs "
@@ -60,7 +61,9 @@ def _format_episodes(episodes: list[dict]) -> str:
     return "\n\n".join(f"Q: {e['question']}\nA: {e['answer'][:500]}" for e in episodes)
 
 
-async def _run_tool(name: str, args: dict) -> dict:
+async def _run_tool(name: str, args: dict) -> dict | list[dict]:
+    if name == "web_search":
+        return await web_search(args["query"], int(args.get("k", 5)))
     if name != "kb_search":
         return {"text": [], "images": []}
     text_hits, image_hits = await search_kb(
@@ -86,9 +89,15 @@ async def research(client, redis, question: str, session_id: str | None = None,
     messages.extend(await memory.conv_history(redis, sid))
 
     all_sources: list[dict] = []
+    tools = [KB_TOOL]
+    # add web_search only when configured — keeps token cost zero when offline
+    from .tools.search import enabled as search_enabled
+
+    if search_enabled():
+        tools.append(WEB_SEARCH_TOOL)
     for _ in range(settings.agent_max_steps):
         resp = await client.chat.completions.create(
-            model=settings.agent_model, messages=messages, tools=[KB_TOOL]
+            model=settings.agent_model, messages=messages, tools=tools
         )
         msg = resp.choices[0].message
         if not msg.tool_calls:
@@ -114,13 +123,24 @@ async def research(client, redis, question: str, session_id: str | None = None,
                 args = {}
             yield {"type": "agent", "event": "tool_call", "name": tc.function.name, "args": args}
             result = await _run_tool(tc.function.name, args)
-            messages.append({"role": "tool", "tool_call_id": tc.id, "content": _format_sources(result)})
-            all_sources.extend(result["text"])
-            yield {"type": "sources", "items": source_items(result["text"], result["images"])}
-            yield {
-                "type": "agent",
-                "event": "tool_result",
-                "name": tc.function.name,
-                "summary": _format_sources(result)[:300],
-            }
+            if tc.function.name == "web_search":
+                content = format_web(result)  # type: ignore[arg-type]
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": content})
+                # surface web hits as sources (kind=web) for UI
+                web_items = [
+                    {"kind": "web", "source": r.get("url", ""), "page": 0, "score": 0.0, "content": r.get("snippet", "")[:200], "caption": r.get("title", ""), "image_url": None}
+                    for r in result  # type: ignore[union-attr]
+                ]
+                yield {"type": "sources", "items": web_items}
+                yield {"type": "agent", "event": "tool_result", "name": tc.function.name, "summary": content[:300]}
+            else:
+                messages.append({"role": "tool", "tool_call_id": tc.id, "content": _format_sources(result)})  # type: ignore[arg-type]
+                all_sources.extend(result["text"])  # type: ignore[union-attr]
+                yield {"type": "sources", "items": source_items(result["text"], result["images"])}  # type: ignore[union-attr]
+                yield {
+                    "type": "agent",
+                    "event": "tool_result",
+                    "name": tc.function.name,
+                    "summary": _format_sources(result)[:300],  # type: ignore[arg-type]
+                }
     yield {"type": "text", "delta": "\n\n(stopped: reached max steps without a final answer)"}

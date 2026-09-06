@@ -7,6 +7,7 @@ import logging
 
 from ..config import settings
 from ..tools.rag import rag_search
+from ..tools.search import format_results, web_search
 from .schemas import Direction, ResearchSummary
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,26 @@ async def run_direction(client, direction: Direction, k: int = 4, k_images: int 
         context += "\n\nFigures:\n" + "\n".join(
             f"[fig {j+1}] page {img.get('page')} object_key={img.get('object_key')}" for j, img in enumerate(image_hits)
         )
+
+    # web search fallback when RAG is thin (no-op when unconfigured)
+    web_hits: list[dict] = []
+    if len(text_hits) < 2:
+        web_hits = await web_search(direction.question, k=3)
+        if web_hits:
+            context += "\n\nWeb results:\n" + format_results(web_hits)
+            # surface web hits as sources (kind=web) so downstream can cite them
+            for w in web_hits:
+                sources.append(
+                    {
+                        "kind": "web",
+                        "source": w.get("url", ""),
+                        "page": 0,
+                        "score": 0.0,
+                        "content": w.get("snippet", "")[:200],
+                        "caption": w.get("title", ""),
+                        "image_url": None,
+                    }
+                )
 
     prompt = (
         f"Research direction: {direction.id} — {direction.question}\n"
