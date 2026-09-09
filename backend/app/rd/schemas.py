@@ -24,6 +24,17 @@ class ResearchSummary(BaseModel):
     sources: list[dict] = Field(default_factory=list)
     confidence: str = Field(default="low", description="low | med | high")
     gaps: list[str] = Field(default_factory=list)
+    citation_coverage: float | None = Field(default=None, description="cited_claims/total_claims 0..1")
+    cited_sources: list[str] = Field(default_factory=list, description="deduped source strings cited via [N]")
+
+
+class CitationCoverage(BaseModel):
+    total_claims: int = 0
+    cited_claims: int = 0
+    sent_coverage: float = 0.0
+    cited_sources: list[str] = Field(default_factory=list)
+    expected_coverage: float | None = None
+    invalid_markers: list[int] = Field(default_factory=list)
 
 
 class Validation(BaseModel):

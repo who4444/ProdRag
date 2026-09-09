@@ -3,6 +3,7 @@
 ponytail: subprocess without cgroup/network ns, switch to docker+gvisor if untrusted.
 """
 
+import ast
 import asyncio
 import subprocess
 import sys
@@ -13,6 +14,14 @@ from pathlib import Path
 from pydantic import BaseModel
 
 from .schemas import SandboxResult
+
+# Map top-level imports to pip packages (common aliases)
+_IMPORT_TO_PIP = {
+    "sklearn": "scikit-learn",
+    "PIL": "Pillow",
+    "cv2": "opencv-python",
+    "yaml": "PyYAML",
+}
 
 
 def _write_files(tmp: Path, files: list[dict | BaseModel]):
@@ -34,11 +43,62 @@ def _write_files(tmp: Path, files: list[dict | BaseModel]):
         p.write_text(content or "", encoding="utf-8")
 
 
+def _patch_requirements_from_imports(tmp: Path) -> str:
+    """Parse demo.py imports via ast and auto-append missing to requirements.txt. Returns log."""
+    demo = tmp / "demo.py"
+    req = tmp / "requirements.txt"
+    if not demo.exists():
+        return ""
+    try:
+        tree = ast.parse(demo.read_text(encoding="utf-8"))
+    except Exception:
+        return ""
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                imports.add(alias.name.split(".")[0])
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                imports.add(node.module.split(".")[0])
+    # stdlib + local
+    stdlib = {"os", "sys", "json", "time", "math", "random", "collections", "pathlib", "typing", "subprocess", "tempfile", "re", "datetime"}
+    imports = {i for i in imports if i not in stdlib and not i.startswith("_")}
+    if not imports:
+        return ""
+    existing = set()
+    if req.exists():
+        try:
+            existing = {line.strip().lower().split("==")[0].split(">")[0].strip() for line in req.read_text().splitlines() if line.strip() and not line.strip().startswith("#")}
+        except Exception:
+            existing = set()
+    # Map aliases
+    to_add = []
+    for imp in sorted(imports):
+        pip_name = _IMPORT_TO_PIP.get(imp, imp)
+        if pip_name.lower() not in existing and pip_name.lower() not in {e.lower() for e in existing}:
+            # only auto-add common packages, avoid hallucinating
+            if pip_name.lower() in {"numpy", "torch", "pandas", "scikit-learn", "scipy", "matplotlib", "Pillow", "requests", "tqdm", "pytest", "opencv-python", "transformers"}:
+                to_add.append(pip_name)
+    if to_add:
+        try:
+            with req.open("a", encoding="utf-8") as f:
+                for pkg in to_add:
+                    f.write(f"{pkg}\n")
+            return f"auto-added deps: {', '.join(to_add)}"
+        except Exception:
+            pass
+    return ""
+
+
 def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
     start = time.time()
+    # AST dep inference before pip (0 LLM, stdlib)
+    patch_log = _patch_requirements_from_imports(tmp)
     # pip install if requirements.txt exists and non-empty
     req = tmp / "requirements.txt"
-    pip_log = ""
+    pip_log = patch_log
+    pip_code = 0
     if req.exists():
         try:
             txt = req.read_text().strip()
@@ -50,22 +110,42 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
                     text=True,
                     timeout=60,
                 )
-                pip_log = proc.stdout + proc.stderr
+                pip_log = (pip_log + "\n" if pip_log else "") + proc.stdout + proc.stderr
+                pip_code = proc.returncode
         except Exception as e:
-            pip_log = str(e)
+            pip_log = (pip_log + "\n" if pip_log else "") + str(e)
+            pip_code = 1
 
-    # pytest
+    # pytest — discover all tests (supports dynamic model.py etc.)
     pytest_log = ""
+    pytest_code = 0
+    has_test = any((tmp / p).exists() for p in ["test_demo.py", "tests/test_demo.py", "test_*.py"])
     try:
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "test_demo.py", "-v"],
-            cwd=tmp,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        pytest_log = (pip_log + "\n" if pip_log else "") + proc.stdout + proc.stderr
-        pytest_code = proc.returncode
+        if not has_test:
+            pytest_log = (pip_log + "\n" if pip_log else "") + "no test file"
+            pytest_code = 127
+        else:
+            # Run pytest without explicit file to allow discovery; fallback to test_demo.py
+            proc = subprocess.run(
+                [sys.executable, "-m", "pytest", "-q"],
+                cwd=tmp,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+            )
+            pytest_log = (pip_log + "\n" if pip_log else "") + proc.stdout + proc.stderr
+            pytest_code = proc.returncode
+            # Fallback to explicit if no tests collected
+            if "no tests ran" in pytest_log.lower() or "collected 0 items" in pytest_log.lower():
+                proc2 = subprocess.run(
+                    [sys.executable, "-m", "pytest", "test_demo.py", "-v"],
+                    cwd=tmp,
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout,
+                )
+                pytest_log = (pip_log + "\n" if pip_log else "") + proc2.stdout + proc2.stderr
+                pytest_code = proc2.returncode
     except subprocess.TimeoutExpired as e:
         pytest_log = (pip_log + "\n" if pip_log else "") + (e.stdout.decode() if isinstance(e.stdout, bytes) else str(e.stdout or "")) + " timeout"
         pytest_code = 124
@@ -97,12 +177,17 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
         demo_code = 1
 
     runtime_ms = int((time.time() - start) * 1000)
-    # passed if both pytest and demo succeed (pytest_code 0 and demo_code 0) and files exist
-    # If no test file, just check demo
-    passed = (pytest_code == 0 and demo_code == 0)
-    # If pytest not found but demo succeeded, still consider passed for minimal case
-    if pytest_code == 127 and demo_code == 0:
-        passed = True
+    # Fixed passed logic: pip must succeed (if present), pytest and demo must succeed
+    # pip_code non-zero is failure; pytest 127 (no pytest) is ok if demo passes (minimal env)
+    if pip_code != 0:
+        passed = False
+    elif pytest_code == 127 and demo_code == 0:
+        passed = True  # no test file but demo ok — minimal case
+    else:
+        passed = (pytest_code == 0 and demo_code == 0)
+    # Timeout always fails
+    if "timeout" in pytest_log.lower() or "timeout" in demo_log.lower():
+        passed = False
     return demo_code, pytest_log, demo_log, runtime_ms
 
 

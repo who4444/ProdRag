@@ -157,10 +157,27 @@ async def run_direction(client, direction: Direction, k: int = 4, k_images: int 
     if confidence == "low":
         gaps.append(f"Low evidence for {direction.id}: only {len(text_hits)} hits")
 
+    # Citation coverage (ponytail: derived metric, no LLM)
+    import re
+
+    SENT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
+    CITE_RE = re.compile(r"\[(\d+)\]")
+    sents = [s.strip() for s in SENT_RE.split(findings.strip()) if s.strip()]
+    total_claims = len(sents) if sents else 1
+    cited_claims = sum(1 for s in sents if any(1 <= int(n) <= len(sources) for n in CITE_RE.findall(s)))
+    sent_coverage = cited_claims / total_claims if total_claims else 0.0
+    # warn if low coverage
+    if sent_coverage < 0.5 and findings and "Synthesis failed" not in findings:
+        gaps.append(f"Low citation coverage {sent_coverage:.0%} for {direction.id} ({cited_claims}/{total_claims} sentences cited)")
+    cited_sources = sorted({sources[int(n) - 1].get("source", "") for s in sents for n in CITE_RE.findall(s) if 1 <= int(n) <= len(sources) and sources[int(n) - 1].get("source")})
+    citation_coverage = round(sent_coverage, 3)
+
     return ResearchSummary(
         direction_id=direction.id,
         findings=findings,
         sources=sources,
         confidence=confidence,
         gaps=gaps,
+        citation_coverage=citation_coverage,
+        cited_sources=cited_sources,
     )

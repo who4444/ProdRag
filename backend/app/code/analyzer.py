@@ -17,7 +17,8 @@ SYSTEM = (
     "Shape: {\"file_tasks\": [{\"path\": str, \"goal\": str, \"context_slice\": str}], "
     "\"test_intents\": [str], \"dependencies\": [str], \"risks\": [str]}\n"
     "Rules:\n"
-    "- file_tasks must include demo.py, requirements.txt, test_demo.py (v1 fixed set).\n"
+    "- file_tasks must include demo.py, requirements.txt, test_demo.py (base 3), "
+    "others allowed (e.g., model.py, utils.py) if core_algorithm mentions model/dataset/utils — 3-5 files total.\n"
     "- test_intents must derive from acceptance_criteria (e.g. demo.py exits 0, toy metric).\n"
     "- dependencies are python packages (e.g. numpy).\n"
     "- risks mirror validation.risks if any.\n"
@@ -79,13 +80,18 @@ async def analyze_artifact(client, artifact) -> CodingSpec:
                 tasks.append(FileTask(path=str(t.get("path", "")), goal=str(t.get("goal", "")), context_slice=str(t.get("context_slice", ""))))
             except Exception:
                 continue
-        # Ensure fixed set
+        # Ensure fixed set (base 3), allow up to 5
         paths = {t.path for t in tasks}
         for required in ["demo.py", "requirements.txt", "test_demo.py"]:
             if required not in paths:
                 tasks.append(FileTask(path=required, goal=f"generate {required}", context_slice=""))
-
-        test_intents = [str(x) for x in (data.get("test_intents") or [])][:5]
+        # cap 5, keep required 3 first
+        if len(tasks) > 5:
+            # keep demo.py, requirements.txt, test_demo.py + first extras
+            required_set = {"demo.py", "requirements.txt", "test_demo.py"}
+            extras = [t for t in tasks if t.path not in required_set][:2]
+            tasks = [t for t in tasks if t.path in required_set] + extras
+            tasks = tasks[:5]
         if not test_intents:
             # fallback to acceptance_criteria
             demo_spec = artifact_dict.get("demo_spec") or {}
