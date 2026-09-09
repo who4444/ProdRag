@@ -17,7 +17,7 @@ def enabled() -> bool:
 
 def _is_transient(exc: Exception) -> bool:
     if isinstance(exc, HTTPStatusError):
-        return exc.response.status_code >= 500
+        return exc.response.status_code >= 500 or exc.response.status_code == 429
     return isinstance(exc, TransportError)
 
 
@@ -30,7 +30,7 @@ async def rerank(query: str, texts: list[str]) -> list[float] | None:
         headers["Authorization"] = f"Bearer {settings.rerank_service_token}"
 
     async def _call():
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 settings.rerank_service_url.rstrip("/"),
                 json={"query": query, "texts": texts},

@@ -71,11 +71,12 @@ async def test_pipeline_event_sequence(monkeypatch):
 
     # order: orchestrator plan first
     assert events[0]["type"] == "orchestrator" and events[0]["event"] == "plan"
-    # then 10 subagent events (start+result x5)
+    # then 10 subagent events (start+result x5) — parallel batch: 5 starts then 5 results
     subagent_events = [e for e in events if e["type"] == "subagent"]
     assert len(subagent_events) == 10
-    assert subagent_events[0]["event"] == "start"
-    assert subagent_events[1]["event"] == "result"
+    # batch: first 5 are starts, next 5 are results (gather preserves direction order)
+    assert [e["event"] for e in subagent_events[:5]] == ["start"] * 5
+    assert [e["event"] for e in subagent_events[5:]] == ["result"] * 5
     # validator before artifact
     validator_idx = next(i for i, e in enumerate(events) if e["type"] == "validator")
     artifact_idx = next(i for i, e in enumerate(events) if e["type"] == "artifact")

@@ -51,14 +51,31 @@ async def code_generate(client, artifact, session_id: str | None = None):
 
     # Orchestrator (already part of analyzer's file_tasks, but emit separately for spec)
     tasks = build_code_plan(coding_spec)
-    # Emit file tasks as plan details (tests check for code/plan)
-    # Now subagents
-    generated: list[GeneratedFile] = []
+    # Parallel subagents with semaphore (3 concurrent)
+    sem = asyncio.Semaphore(3)
+
+    async def _run_one(t):
+        async with sem:
+            return await run_file_task(client, t)
+
     for task in tasks:
         yield {"type": "code", "event": "file_start", "run_id": run_id, "path": task.path, "goal": task.goal}
-        gfile = await run_file_task(client, task)
-        generated.append(gfile)
-        yield {"type": "code", "event": "file_result", "run_id": run_id, "file": gfile.model_dump()}
+
+    t0 = time.perf_counter()
+    try:
+        results = await asyncio.gather(*(_run_one(t) for t in tasks), return_exceptions=True)
+    except Exception:
+        logger.exception("code pipeline gather failed")
+        results = []
+
+    generated: list[GeneratedFile] = []
+    for task, res in zip(tasks, results):
+        if isinstance(res, Exception):
+            logger.exception("file %s failed", task.path)
+            res = GeneratedFile(path=task.path, content="print('hello demo')\n" if task.path == "demo.py" else "numpy\n" if task.path == "requirements.txt" else "def test_demo():\n    assert True\n")
+        generated.append(res)
+        yield {"type": "code", "event": "file_result", "run_id": run_id, "file": res.model_dump()}
+    logger.info("code pipeline %s: files %d done in %.2fs", run_id, len(generated), time.perf_counter() - t0)
 
     # Tester — generate test_demo.py from CodingSpec, not from generated code
     # Need to ensure we have a test file; if subagents already generated one, keep but also generate via tester

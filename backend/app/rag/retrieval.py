@@ -30,7 +30,11 @@ async def search_kb(
         vec, first_k, sparse_query=sparse_q, prefetch_k=first_k
     )
     logger.info("retrieve hybrid found %d text hits in %.2fs", len(text_hits), time.perf_counter() - t0)
-    scores = await rerank(question, [h["text"][:RERANK_TEXT_LIMIT] for h in text_hits])
+    try:
+        scores = await rerank(question, [h["text"][:RERANK_TEXT_LIMIT] for h in text_hits])
+    except Exception:
+        logger.warning("rerank failed for query=%r — falling back to RRF", question[:80], exc_info=True)
+        scores = None
     if scores is not None:
         for h, s in zip(text_hits, scores):
             h["score"] = round(s, 3)
@@ -39,6 +43,9 @@ async def search_kb(
         logger.info("retrieve reranked %d -> top %d in %.2fs", len(scores), len(text_hits), time.perf_counter() - t0)
     else:
         text_hits = text_hits[:k]
+        if scores is None:
+            # Check if rerank was enabled but failed — already logged above
+            pass
     image_hits: list[dict] = []
     if k_images > 0:
         try:

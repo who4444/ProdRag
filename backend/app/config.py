@@ -8,13 +8,14 @@ class Settings(BaseSettings):
 
     api_token: str = "change-me"
 
-    # Answering LLM. DeepSeek is OpenAI-compatible at api.deepseek.com and is
-    # chat-only (no vision, no embeddings). Leave chat_base_url empty for OpenAI.
+    # Answering LLM. DeepSeek is OpenAI-compatible at api.deepseek.com.
+    # New DS Vision model supports images — set chat_supports_images=true to send figures.
     chat_api_key: str = ""
     chat_base_url: str = "https://api.deepseek.com"
-    chat_model: str = "deepseek-v4-flash"
-    chat_supports_images: bool = False
+    chat_model: str = "deepseek-vl"  # DS Vision (new) — override via PRODRAG_CHAT_MODEL if needed
+    chat_supports_images: bool = True
     max_images_in_context: int = 3
+    vision_chat_model: str = "deepseek-vl"  # used when chat_supports_images=true, falls back to chat_model
 
     # Text embeddings: default to self-hosted bge-m3 via Modal (1024 dims).
     # openai_api_key is used only for the optional text-embedding-3-small
@@ -60,7 +61,7 @@ class Settings(BaseSettings):
     rerank_model: str = "BAAI/bge-reranker-base"
 
     # Research agent + memory
-    agent_model: str = "deepseek-v4-flash"
+    agent_model: str = "deepseek-vl"
     agent_max_steps: int = 12
     memory_collection: str = "episodes"
     memory_top_k: int = 5
