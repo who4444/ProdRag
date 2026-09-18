@@ -255,14 +255,14 @@ def test_rd_research_streams_ndjson_and_event_order(api_client, monkeypatch):
         assert resp.status_code == 200
         assert "x-ndjson" in resp.headers.get("content-type", "")
         lines = [json.loads(line) for line in resp.iter_lines() if line]
-        types = [l["type"] for l in lines]
+        types = [e["type"] for e in lines]
         assert types[0] == "orchestrator"
         assert "subagent" in types
         assert "validator" in types
         assert types[-1] == "artifact"
-        plan = next(l for l in lines if l["type"] == "orchestrator")
+        plan = next(e for e in lines if e["type"] == "orchestrator")
         assert len(plan["directions"]) == 5
-        validator = next(l for l in lines if l["type"] == "validator")
+        validator = next(e for e in lines if e["type"] == "validator")
         assert "feasible" in validator["validation"]
 
 
@@ -290,7 +290,7 @@ def test_rd_research_fixed_taxonomy(api_client, monkeypatch):
     req_body = {"requirements": {"goal": "g", "core_idea": "c", "demo_type": "script", "constraints": [], "audience": "researcher", "open_questions": []}}
     with client.stream("POST", "/rd/research", headers=_auth_headers(), json=req_body) as resp:
         lines = [json.loads(line) for line in resp.iter_lines() if line]
-        plan = next(l for l in lines if l["type"] == "orchestrator")
+        plan = next(e for e in lines if e["type"] == "orchestrator")
         ids = [d["id"] for d in plan["directions"]]
         assert ids == ["core_algorithm", "datasets", "baselines", "implementation_details", "evaluation"]
 
@@ -318,7 +318,7 @@ def test_rd_research_artifact_has_demo_spec(api_client, monkeypatch):
     req_body = {"requirements": {"goal": "g", "core_idea": "c", "demo_type": "script", "constraints": [], "audience": "researcher", "open_questions": []}}
     with client.stream("POST", "/rd/research", headers=_auth_headers(), json=req_body) as resp:
         lines = [json.loads(line) for line in resp.iter_lines() if line]
-        artifact = next(l for l in lines if l["type"] == "artifact")
+        artifact = next(e for e in lines if e["type"] == "artifact")
         assert artifact["data"]["demo_spec"]["entrypoint"] == "demo.py"
         assert len(artifact["data"]["demo_spec"]["acceptance_criteria"]) >= 1
         assert artifact["data"]["validation"]["feasible"] is False

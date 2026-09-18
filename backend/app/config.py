@@ -8,6 +8,11 @@ class Settings(BaseSettings):
 
     api_token: str = "change-me"
 
+    # Offline mode: no external services (Supabase, Redis, Qdrant network, Modal,
+    # chat API). Qdrant runs in-memory and embeddings use a deterministic hash
+    # embedder. Used by CI/demo so the stack boots with zero credentials.
+    offline: bool = False
+
     # Answering LLM. DeepSeek is OpenAI-compatible at api.deepseek.com.
     # New DS Vision model supports images — set chat_supports_images=true to send figures.
     chat_api_key: str = ""
@@ -36,6 +41,13 @@ class Settings(BaseSettings):
     qdrant_api_key: str = ""
     collection_text: str = "text_chunks"
     collection_image: str = "image_chunks"
+
+    # Codebase indexing (repo RAG): collection + scan caps.
+    collection_code: str = "code_chunks"
+    repo_max_files: int = 2000
+    repo_max_file_bytes: int = 200_000
+    repo_chunk_max_lines: int = 80
+    repo_chunk_overlap_lines: int = 10
 
     redis_url: str = "redis://localhost:6379"
 
@@ -73,6 +85,10 @@ class Settings(BaseSettings):
     search_service_url: str = ""
     search_service_token: str = ""
     search_max_results: int = 5
+
+    # LLM cost tracking (USD per 1M tokens) — core/llm.py usage ledger.
+    llm_input_price_per_mtok: float = 0.27
+    llm_output_price_per_mtok: float = 1.10
 
     # TTL for runs/episodes (0 = forever)
     research_run_ttl_s: int = 2592000  # 30d

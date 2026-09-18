@@ -3,11 +3,10 @@
 One function N concurrent invocations, each rag_search + synthesis.
 """
 
-import json
 
 import pytest
 
-from app.rd.schemas import Direction, Requirements
+from app.rd.schemas import Direction
 
 
 class _FakeMessage:

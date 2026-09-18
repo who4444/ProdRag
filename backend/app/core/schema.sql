@@ -93,10 +93,24 @@ create table if not exists public.code_artifacts (
   created_at    timestamptz not null default now()
 );
 
+-- Codebase indexing (repo RAG) — one row per indexed local repo
+create table if not exists public.repos (
+  id            text primary key,
+  name          text not null,
+  root          text not null,
+  files         int  not null default 0,
+  chunks        int  not null default 0,
+  status        text not null default 'ready',
+  metadata      jsonb not null default '{}'::jsonb,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
 -- v2.0: TTL + history indexes (lazy expiry: WHERE expires_at IS NULL OR expires_at > now())
 create index if not exists research_runs_created_at_idx on public.research_runs (created_at desc);
 create index if not exists research_runs_session_idx on public.research_runs (session_id);
 create index if not exists code_runs_created_at_idx on public.code_runs (created_at desc);
+create index if not exists repos_created_at_idx on public.repos (created_at desc);
 create index if not exists episodes_created_at_idx on public.episodes (created_at desc);
 create index if not exists conversations_created_at_idx on public.conversations (created_at desc);
 

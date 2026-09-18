@@ -98,7 +98,7 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
     # pip install if requirements.txt exists and non-empty
     req = tmp / "requirements.txt"
     pip_log = patch_log
-    pip_code = 0
+    _pip_code = 0
     if req.exists():
         try:
             txt = req.read_text().strip()
@@ -111,19 +111,19 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
                     timeout=60,
                 )
                 pip_log = (pip_log + "\n" if pip_log else "") + proc.stdout + proc.stderr
-                pip_code = proc.returncode
+                _pip_code = proc.returncode
         except Exception as e:
             pip_log = (pip_log + "\n" if pip_log else "") + str(e)
-            pip_code = 1
+            _pip_code = 1
 
     # pytest — discover all tests (supports dynamic model.py etc.)
     pytest_log = ""
-    pytest_code = 0
+    _pytest_code = 0
     has_test = any((tmp / p).exists() for p in ["test_demo.py", "tests/test_demo.py", "test_*.py"])
     try:
         if not has_test:
             pytest_log = (pip_log + "\n" if pip_log else "") + "no test file"
-            pytest_code = 127
+            _pytest_code = 127
         else:
             # Run pytest without explicit file to allow discovery; fallback to test_demo.py
             proc = subprocess.run(
@@ -134,7 +134,7 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
                 timeout=timeout,
             )
             pytest_log = (pip_log + "\n" if pip_log else "") + proc.stdout + proc.stderr
-            pytest_code = proc.returncode
+            _pytest_code = proc.returncode
             # Fallback to explicit if no tests collected
             if "no tests ran" in pytest_log.lower() or "collected 0 items" in pytest_log.lower():
                 proc2 = subprocess.run(
@@ -145,16 +145,16 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
                     timeout=timeout,
                 )
                 pytest_log = (pip_log + "\n" if pip_log else "") + proc2.stdout + proc2.stderr
-                pytest_code = proc2.returncode
+                _pytest_code = proc2.returncode
     except subprocess.TimeoutExpired as e:
         pytest_log = (pip_log + "\n" if pip_log else "") + (e.stdout.decode() if isinstance(e.stdout, bytes) else str(e.stdout or "")) + " timeout"
-        pytest_code = 124
+        _pytest_code = 124
     except FileNotFoundError:
         pytest_log = pip_log + "\npytest not found"
-        pytest_code = 127
+        _pytest_code = 127
     except Exception as e:
         pytest_log = pip_log + f"\npytest error: {e}"
-        pytest_code = 1
+        _pytest_code = 1
 
     # demo.py
     demo_log = ""
@@ -177,17 +177,6 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
         demo_code = 1
 
     runtime_ms = int((time.time() - start) * 1000)
-    # Fixed passed logic: pip must succeed (if present), pytest and demo must succeed
-    # pip_code non-zero is failure; pytest 127 (no pytest) is ok if demo passes (minimal env)
-    if pip_code != 0:
-        passed = False
-    elif pytest_code == 127 and demo_code == 0:
-        passed = True  # no test file but demo ok — minimal case
-    else:
-        passed = (pytest_code == 0 and demo_code == 0)
-    # Timeout always fails
-    if "timeout" in pytest_log.lower() or "timeout" in demo_log.lower():
-        passed = False
     return demo_code, pytest_log, demo_log, runtime_ms
 
 

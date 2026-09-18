@@ -92,6 +92,7 @@ async def analyze_artifact(client, artifact) -> CodingSpec:
             extras = [t for t in tasks if t.path not in required_set][:2]
             tasks = [t for t in tasks if t.path in required_set] + extras
             tasks = tasks[:5]
+        test_intents = [str(x) for x in (data.get("test_intents") or [])][:5]
         if not test_intents:
             # fallback to acceptance_criteria
             demo_spec = artifact_dict.get("demo_spec") or {}

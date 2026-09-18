@@ -27,7 +27,7 @@ idea -> [Analyzer] -> Requirements -> [Orchestrator -> Subagents x5] -> [Validat
 
 ---
 
-## 2. Current state (verified 2026-09-01 — v1: idea -> research -> code, 137 tests)
+## 2. Current state (verified 2026-09-18 — v1: idea -> research -> code + repo RAG M1, 171 tests)
 
 The system is a working multimodal RAG pipeline extended with the R&D research pipeline and the **code generation pipeline** (artifact -> sandbox-tested demo). Everything below is running/verified except where noted.
 
@@ -48,6 +48,9 @@ The system is a working multimodal RAG pipeline extended with the R&D research p
 | Search Tool    | `backend/app/tools/search.py` (Tavily/Serper/generic proxy, `enabled()` false → no-op) | optional web fallback when RAG `<2`, legacy agent second tool |
 | R&D Pipeline   | `backend/app/rd/{analyzer,orchestrator,subagent,validator,artifacts,pipeline}.py` | idea -> research -> artifact |
 | Code Pipeline  | `backend/app/code/{analyzer,orchestrator,subagent,tester,sandbox,pipeline}.py` | artifact -> sandbox-tested demo (`demo.py`+`test_demo.py`) |
+| Repo indexing  | `backend/app/repo/{walker,chunker,indexer}.py` + `tools/code_rag.py` | local path -> AST chunks -> Qdrant `code_chunks` (repo RAG, M1) |
+| Offline mode   | `PRODRAG_OFFLINE=1` (`core/vectorstore.py`, `core/embeddings/text.py`, `core/db.py`) | in-memory Qdrant + hash embeddings, zero credentials |
+| LLM ledger     | `backend/app/core/llm.py` | `chat_json()` structured output + token/cost per run |
 | Frontend       | Streamlit (`frontend/app.py`) + `frontend/simple_test.html` | Documents + Ask + Research + R&D + simple test UIs |
 | Eval           | `eval/recall.py` (Recall@k vs golden set) | artifact/code faithfulness planned |
 
@@ -69,15 +72,22 @@ backend/app/           # FastAPI + worker package (organized by concern)
     tools.py           # /tools/search (web search probe, GET+POST)
   core/                # infrastructure
     storage.py         # Supabase Storage REST client (httpx, secret API key)
-    db.py              # Supabase Postgres CRUD (documents, parts, conv, episodes, research_runs, code_runs)
+    db.py              # Supabase Postgres CRUD (documents, parts, conv, episodes, research_runs, code_runs, repos)
     schema.sql         # DDL for the relational layer (apply via SQL editor / psql)
-    vectorstore.py     # AsyncQdrantClient, ensure_collections, search/upsert (+episodes)
-    embeddings/{text,vision}.py
+    vectorstore.py     # AsyncQdrantClient, ensure_collections, search/upsert (+episodes, code_chunks)
+    llm.py             # chat_json() structured output + Usage ledger (tokens/cost per run)
+    embeddings/{text,vision}.py  # text: Modal bge-m3 / OpenAI / offline hash embedder
     ocr.py             # Tesseract via pytesseract (graceful degradation)
     retry.py           # retry_async (exp backoff, transient-predicate)
   tools/
     rag.py             # rag_search() wrapper — the packaged RAG tool
+    code_rag.py        # code_search() over code_chunks (hybrid + offline coverage rerank)
     search.py          # web_search() via Tavily/Serper/generic proxy (enabled() false → no-op)
+  repo/                # Codebase indexing (repo RAG, M1)
+    walker.py          # deterministic walk, ignore dirs/dotfiles, size/count caps
+    chunker.py         # AST-aware chunks (function/class/method/block, line ranges, imports)
+    indexer.py         # walk -> chunk -> embed (batched) -> code_chunks; idempotent re-index
+    schemas.py         # RepoIndexRequest/SearchRequest/CodeChunk/RepoStats
   rd/                  # R&D pipeline (idea -> research -> artifact)
     schemas.py         # Requirements, Direction, ResearchSummary, Validation, ResearchArtifact
     analyzer.py        # second-request handshake, no KB
@@ -104,7 +114,7 @@ backend/app/           # FastAPI + worker package (organized by concern)
   agent.py             # research(): single tool-calling loop (now with optional web_search tool)
   memory.py            # conv (Supabase messages) + episodic (Qdrant + Supabase)
   worker.py            # arq WorkerSettings
-backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_search.py (137 tests)
+backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_llm_usage.py, test_offline_mode.py, test_search.py (171 tests)
 deploy/docker-compose.yml   # qdrant + redis + api + worker (no MinIO anymore)
 deploy/modal/          # embed_service.py, clip_service.py, search_proxy.py example, manage.sh, README.md
 frontend/              # Streamlit app.py + api.py + simple_test.html (Documents / Ask / Research / R&D + simple test UIs)
@@ -119,10 +129,13 @@ PROJECT.md             # this file
 | `text_chunks` | 1024| bge-m3 dense + **BM25 sparse (`bm25`)** | `doc_id, source, page, chunk_idx, kind, metadata, text` |
 | `image_chunks`| 512 | CLIP   | `doc_id, source, page, image, object_key, caption, ocr_text, metadata` |
 | `episodes`   | 1024| bge-m3 | `session_id, created_at, question, answer, sources[]` |
+| `code_chunks` | 1024| bge-m3 dense + **BM25 sparse (`bm25`)** | `repo_id, path, language, symbol, kind, start_line, end_line, imports[], text` |
 
 - Point IDs are **deterministic** (SHA-256 of kind + payload) → re-ingesting the same PDF is idempotent (upsert overwrites).
 - Changing the text embedding model changes `PRODRAG_EMBEDDING_DIM` → collection must be recreated (drop qdrant volume or delete collection) and data re-ingested.
-- `text_chunks` is hybrid (dense + BM25 sparse, RRF-fused in `search_text`); a pre-existing collection without the `bm25` sparse vector warns at boot and searches fall back to dense until the collection is deleted and re-ingested.
+- `text_chunks` / `code_chunks` are hybrid (dense + BM25 sparse, RRF-fused); a pre-existing collection without the `bm25` sparse vector warns at boot and searches fall back to dense until the collection is deleted and re-ingested.
+- Sparse weights are stopword-filtered and log-tf saturated (`core/sparse.py`); re-ingest existing collections to pick up the improved ranking (queries keep working in the meantime).
+- Offline mode (`PRODRAG_OFFLINE=1`) uses in-memory Qdrant + deterministic hash embeddings and BM25-only code search with a lexical coverage reranker (`tools/code_rag.py:_lexical_rerank`) — reproducible zero-credential demo, lower recall than real embeddings.
 
 ### 2.3b Relational layer (Supabase Postgres)
 
@@ -138,6 +151,7 @@ System of record for entities & lifecycle; Qdrant stays vector-only. DDL lives i
 | `research_artifacts` | materialized artifacts: `run_id fk, artifact jsonb, validation jsonb, created_at` |
 | `code_runs` | code generation runs: `id, artifact_run_id?, coding_spec jsonb, files jsonb, status, created_at` |
 | `code_artifacts` | code artifacts: `run_id fk, artifact jsonb (CodeArtifact), sandbox jsonb, created_at` |
+| `repos` | indexed codebases: `id text pk (sha256 of resolved root), name, root, files, chunks, status, metadata jsonb` |
 
 Env: `PRODRAG_DATABASE_URL` (Postgres connection string). Driver: `supabase` REST client (`core/db.py`). Endpoints: `GET /documents`, `DELETE /documents/{id}`, `/rd/*`, `/code/*`, `/tools/search`.
 
@@ -157,6 +171,9 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN` (except `GET /h
 - `POST /code/analyze` — code analyzer: `{artifact: ResearchArtifact}` → `{file_tasks, test_intents, dependencies, risks, coding_spec:{...}}`. One `json_object` LLM call, no KB, fallback on failure.
 - `POST /code/generate` — code pipeline: `{artifact: ResearchArtifact, session_id?}` → NDJSON stream: `code/plan`, `code/file_start|file_result` x3 (`demo.py`, `requirements.txt`, `test_demo.py`), `tester/result` (from `CodingSpec`+`acceptance_criteria`, not from code), `sandbox/start|result` (`{passed, pytest_log, demo_log, returncode}`), `code/artifact` (`CodeArtifact{files, test_file, sandbox}`). Persisted to `code_runs`/`code_artifacts` (best-effort).
 - `POST /tools/search` — web search probe: `{query, k?}` → `{"enabled", "results":[{title,url,snippet}], "formatted"}`; `GET /tools/search?query=&k=` and `GET /tools/search/status` for browser probing (avoids 405).
+- `POST /repo/index` — `{path, repo_id?, name?}` (local path) → `RepoStats{repo_id, name, root, files, chunks, skipped, runtime_ms}`. Deterministic repo id; re-index deletes old points first.
+- `POST /repo/search` — `{query, k?, repo_id?, path_prefix?}` → `{hits:[{path, symbol, kind, start_line, end_line, score, snippet}]}` (hybrid; offline lexical rerank).
+- `GET /repo/list` / `GET /repo/{id}` / `DELETE /repo/{id}` — list / fetch / delete an indexed repo (delete drops Qdrant points + row).
 - `GET  /files/{object_key:path}` — fetch a stored figure (proxies storage)
 
 ### 2.5 Env inventory (`PRODRAG_` prefix)
@@ -170,7 +187,9 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN` (except `GET /h
 `supabase_url`, `supabase_secret_key`,
 `storage_bucket`, `database_url`, `chunk_size`, `chunk_overlap`, `page_dpi`, `min_figure_area`,
 `retrieval_hybrid_k`, `rerank_service_url`, `rerank_service_token`, `rerank_model`,
-`tavily_api_key`, `serper_api_key`, `search_service_url`, `search_service_token`, `search_max_results`.
+`tavily_api_key`, `serper_api_key`, `search_service_url`, `search_service_token`, `search_max_results`,
+`offline`, `collection_code`, `repo_max_files`, `repo_max_file_bytes`, `repo_chunk_max_lines`,
+`repo_chunk_overlap_lines`, `llm_input_price_per_mtok`, `llm_output_price_per_mtok`.
 
 Two `.env` files: repo-root `.env` (used by docker compose) and `backend/.env` (used when running uvicorn from `backend/`). Both gitignored.
 
@@ -265,7 +284,8 @@ Two `.env` files: repo-root `.env` (used by docker compose) and `backend/.env` (
 2. **Search Tool** (optional) — `backend/app/tools/search.py` `web_search()` via Tavily/Serper/generic proxy; `enabled()` false → no-op. R&D subagents auto-append web hits when RAG `<2`; legacy agent exposes `web_search` as second tool when configured.
 3. **R&D Pipeline** — `backend/app/rd/` — analyzer -> orchestrator -> subagents -> validator -> artifact.
 4. **Code Pipeline** — `backend/app/code/` — analyzer -> orchestrator -> subagents -> tester -> sandbox -> CodeArtifact. Python-only `demo.py` + `requirements.txt` + `test_demo.py`, toy data, sandbox-verified.
-5. **Memory** — conversation (per session, `conv:{id}`) + episodic (`episodes` collection).
+5. **Repo RAG** — `backend/app/repo/` + `backend/app/tools/code_rag.py` — local path -> deterministic walk -> AST-aware chunks -> `code_chunks` (dense+BM25). Grounds the M2 feasibility phase; standalone `/repo/*` endpoints.
+6. **Memory** — conversation (per session, `conv:{id}`) + episodic (`episodes` collection).
 
 ---
 
@@ -493,7 +513,15 @@ serper_api_key=""                   # PRODRAG_SERPER_API_KEY
 search_service_url=""               # PRODRAG_SEARCH_SERVICE_URL (generic proxy POST {query,k} -> {results:[{title,url,snippet}]})
 search_service_token=""             # PRODRAG_SEARCH_SERVICE_TOKEN
 search_max_results=5                # PRODRAG_SEARCH_MAX_RESULTS
-# R&D + code pipelines reuse agent_model and retrieval_hybrid_k; no new env vars aside from search
+# R&D + code pipelines reuse agent_model and retrieval_hybrid_k
+offline=false                       # PRODRAG_OFFLINE=1 -> in-memory Qdrant + hash embeddings, no creds
+collection_code=code_chunks         # repo RAG collection
+repo_max_files=2000                 # scan caps
+repo_max_file_bytes=200000
+repo_chunk_max_lines=80
+repo_chunk_overlap_lines=10
+llm_input_price_per_mtok=0.27       # cost ledger (core/llm.py)
+llm_output_price_per_mtok=1.10
 ```
 
 ---
@@ -534,10 +562,15 @@ Not built yet (YAGNI until requested):
 
 - **Phase 1 — agent loop (DONE).** `POST /research` streams `kb_search` tool calls → sources → answer; conversation + episodic memory auto-wired. Frontend Research tab. Tests: `test_agent.py`.
 - **Phase 2 — R&D research pipeline (DONE).** `POST /rd/analyze` (second-request handshake, no KB) + `POST /rd/research` (fixed 5-direction fan-out, subagents with RAG+web fallback, validator emit-with-risks, `ResearchArtifact` handoff). Frontend R&D tab. `GET/POST /tools/search` (Tavily/Serper/generic, enabled() false → no-op) + CORS for `file://` test UI. Tests: `test_rd_*.py`, `test_search.py` (42+ tests).
-- **Phase 3 — coding module (DONE, v1).** `POST /code/analyze` (artifact → `CodingSpec`) + `POST /code/generate` (analyzer → orchestrator (fixed 3 files) → subagents (one LLM/file) → tester (from spec, not code) → sandbox (`tmpdir+subprocess` pip/pytest/demo) → `CodeArtifact`). Frontend via `simple_test.html`/`simple_test_app.py`. Tests: `test_code_*_spec.py` (44 tests). 137 tests total.
+- **Phase 3 — coding module (DONE, v1).** `POST /code/analyze` (artifact → `CodingSpec`) + `POST /code/generate` (analyzer → orchestrator (fixed 3 files) → subagents (one LLM/file) → tester (from spec, not code) → sandbox (`tmpdir+subprocess` pip/pytest/demo) → `CodeArtifact`). Frontend via `simple_test.html`/`simple_test_app.py`. Tests: `test_code_*_spec.py` (44 tests).
 - **Phase 4 — conversation UX + Memory tab.** Session picker / "new session" in the UI; `/conversations` endpoints only if a conversation list is wanted.
 - **Phase 5 — hardening.** Docker/gVisor sandbox, `GET /code/runs` history, Storage objects for large code artifacts, auto-retry on sandbox fail.
 - **Phase 6 — eval for agentic quality.** extend `eval/` beyond recall@k: answer faithfulness (citation coverage) + R&D artifact + code sandbox pass rate.
+- **M0 — foundation (DONE).** Offline mode (`PRODRAG_OFFLINE=1`: in-memory Qdrant, hash embeddings, no Supabase/Redis), `core/llm.py` usage/cost ledger, ruff + GitHub Actions CI. 137 -> 171 tests.
+- **M1 — repo indexing / code-aware RAG (DONE).** `backend/app/repo/` walker + AST chunker + indexer, Qdrant `code_chunks` (hybrid), `tools/code_rag.py`, `/repo/{index,search,list,get,delete}`, `repos` table. Evidence: ProdRag self-index (119 files -> 676 chunks) in ~0.8s offline / ~180s cold Modal; `code_search("where is the sandbox run and subprocess")` -> `backend/app/code/sandbox.py` #2 with real embeddings.
+- **M2 — grounded feasibility (next).** `backend/app/feasibility/` (understand -> deterministic codebase map -> technical/integration/data subagents with citations -> evidence gate -> judge), `POST /feasibility/*`, `feasibility_runs/reports`, Streamlit tab, golden-set eval (grounded vs LLM-only baseline).
+- **M3 — PoC + eval + controller.** feasibility-conditioned `code/` generation, `EvaluationReport` (hypotheses/spec/cost/latency), deterministic `runs/` controller + `rd_events` evidence ledger, CLI.
+- **M4 — portfolio packaging.** README v3, ADRs, `eval/feasibility_eval.py` + golden set, demo script.
 
 ---
 
@@ -554,8 +587,17 @@ docker compose -f deploy/docker-compose.yml up --build
 psql "$PRODRAG_DATABASE_URL" -f backend/app/core/schema.sql
 # or paste backend/app/core/schema.sql into Supabase SQL editor
 
-# tests (137, pytest-asyncio)
+# tests (171, pytest-asyncio) + lint
 uv run pytest -q
+uv run ruff check backend/app backend/tests eval
+
+# offline boot (no creds): in-memory Qdrant + hash embeddings
+PRODRAG_OFFLINE=1 uv run uvicorn app.main:app --reload   # from backend/
+# index + search a local repo (offline)
+curl -s -H "Authorization: Bearer $PRODRAG_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"path":"/abs/path/to/repo"}' localhost:8000/repo/index | jq
+curl -s -H "Authorization: Bearer $PRODRAG_API_TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"where is the sandbox runner","k":5}' localhost:8000/repo/search | jq
 
 # frontend
 cd frontend && uv run streamlit run app.py          # 4 tabs
@@ -572,4 +614,4 @@ cd frontend && uv run streamlit run simple_test_app.py  # minimal 3-tab test app
 bash deploy/modal/manage.sh {status|stop|start}
 ```
 
-Blocked until the user supplies `PRODRAG_SUPABASE_URL` / `PRODRAG_SUPABASE_SECRET_KEY` and creates the `prodrag-assets` bucket. Search works offline (`enabled:false` → `[]`) without extra keys.
+Blocked until the user supplies `PRODRAG_SUPABASE_URL` / `PRODRAG_SUPABASE_SECRET_KEY` and creates the `prodrag-assets` bucket. `PRODRAG_OFFLINE=1` boots the API and serves `/repo/*` + `/health` with zero credentials. Search works offline (`enabled:false` → `[]`) without extra keys.

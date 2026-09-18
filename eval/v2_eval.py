@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -11,8 +12,6 @@ TOKEN = os.environ.get("PRODRAG_API_TOKEN", "")
 
 faith_hits = faith_total = 0
 code_pass = code_total = 0
-
-import re
 
 SENT_RE = re.compile(r"(?<=[.!?])\s+|\n+")
 CITE_RE = re.compile(r"\[(\d+)\]")
@@ -33,7 +32,7 @@ for line in open(GOLDEN):
             lines = stream.splitlines()
             sources = json.loads(lines[0])["items"]
             # join text deltas for citation check
-            text = "".join(json.loads(l).get("delta", "") for l in lines[1:] if l.strip().startswith("{"))
+            text = "".join(json.loads(line).get("delta", "") for line in lines[1:] if line.strip().startswith("{"))
             faith_total += 1
             if any(s["source"] in item["expected_sources"] for s in sources):
                 faith_hits += 1
@@ -78,7 +77,7 @@ for line in open(GOLDEN):
             )
             stream = urllib.request.urlopen(req, timeout=120).read().decode()
             # last line is code/artifact with sandbox
-            last = [json.loads(l) for l in stream.splitlines() if l.strip()][-1]
+            last = [json.loads(line) for line in stream.splitlines() if line.strip()][-1]
             data = last.get("data") or last
             sandbox = data.get("sandbox") or {}
             if not sandbox:

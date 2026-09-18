@@ -1,0 +1,23 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PRODRAG_OFFLINE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - name: Install deps (dev)
+        run: uv sync --extra dev
+      - name: Lint
+        run: uv run ruff check backend/app backend/tests eval
+      - name: Tests
+        run: uv run pytest -q

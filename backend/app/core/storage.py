@@ -47,6 +47,8 @@ async def _request(method: str, url: str, *, content: bytes | None = None,
 
 
 async def ensure_bucket() -> None:
+    if settings.offline:
+        return
     buckets = (await _request("GET", f"{_base_url()}/bucket")).json()
     if any(b.get("id") == settings.storage_bucket for b in buckets):
         return

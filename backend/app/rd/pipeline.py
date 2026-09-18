@@ -8,7 +8,6 @@ import logging
 import time
 import uuid
 
-from ..config import settings
 from ..core import db
 from .artifacts import build_artifact
 from .orchestrator import build_plan, build_plan_dynamic

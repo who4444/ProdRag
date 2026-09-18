@@ -3,7 +3,6 @@
 DemoSpec + ResearchArtifact handoff to coding module.
 """
 
-import pytest
 
 from app.rd.schemas import DemoSpec, Requirements, ResearchArtifact, ResearchSummary, Validation
 

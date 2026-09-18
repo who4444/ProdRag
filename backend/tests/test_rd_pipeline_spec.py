@@ -170,7 +170,7 @@ async def test_pipeline_persists_run_and_artifact(monkeypatch):
 @pytest.mark.asyncio
 async def test_pipeline_emit_with_risks_even_when_infeasible(monkeypatch):
     """Validator infeasible must still emit artifact with risks — never blocks. §4.4"""
-    from unittest.mock import AsyncMock, patch
+    from unittest.mock import AsyncMock
 
     from app.rd.pipeline import rd_research
 

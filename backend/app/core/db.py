@@ -259,3 +259,52 @@ async def code_artifact_upsert(run_id: str, artifact: dict, sandbox: dict) -> No
 async def code_artifact_get(run_id: str) -> dict | None:
     res = await _run(_client().table("code_artifacts").select("*").eq("run_id", run_id).execute)
     return (res.data or [None])[0]
+
+
+# --------------------------------------------------------------------------
+# repos (codebase indexing)
+# --------------------------------------------------------------------------
+
+_offline_repos: dict[str, dict] = {}
+
+
+def _offline() -> bool:
+    return settings.offline
+
+
+async def repo_upsert(repo: dict) -> None:
+    """Insert or replace a repo indexing row (id is the PK)."""
+    if _offline():
+        import datetime
+
+        row = dict(repo)
+        row.setdefault("created_at", datetime.datetime.now(datetime.timezone.utc).isoformat())
+        row["updated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        _offline_repos[repo["id"]] = row
+        return
+    await _run(_client().table("repos").upsert(repo).execute)
+
+
+async def repo_get(repo_id: str) -> dict | None:
+    if _offline():
+        return _offline_repos.get(repo_id)
+    res = await _run(_client().table("repos").select("*").eq("id", repo_id).execute)
+    return (res.data or [None])[0]
+
+
+async def repo_list(limit: int = 50) -> list[dict]:
+    if _offline():
+        rows = list(_offline_repos.values())
+        rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return rows[:limit]
+    res = await _run(
+        _client().table("repos").select("*").order("created_at", desc=True).limit(limit).execute
+    )
+    return res.data
+
+
+async def repo_delete(repo_id: str) -> None:
+    if _offline():
+        _offline_repos.pop(repo_id, None)
+        return
+    await _run(_client().table("repos").delete().eq("id", repo_id).execute)

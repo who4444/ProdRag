@@ -8,7 +8,6 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app.rd.schemas import DemoSpec, Requirements, ResearchArtifact, ResearchSummary, Validation
 
 
 def _sample_artifact_dict():
@@ -157,11 +156,11 @@ def test_code_generate_streams_ndjson(api_client, monkeypatch):
     with client.stream("POST", "/code/generate", headers=_auth(), json=req) as resp:
         assert resp.status_code == 200
         assert "x-ndjson" in resp.headers.get("content-type", "")
-        lines = [json.loads(l) for l in resp.iter_lines() if l]
-        types = [l.get("type") for l in lines]
+        events = [json.loads(line) for line in resp.iter_lines() if line]
+        types = [e.get("type") for e in events]
         # Must contain code plan and artifact
-        assert "code" in types or any(l.get("type") == "code" for l in lines)
-        assert any(l.get("event") == "artifact" for l in lines)
+        assert "code" in types or any(e.get("type") == "code" for e in events)
+        assert any(e.get("event") == "artifact" for e in events)
 
 
 def test_code_generate_includes_tester_and_sandbox(api_client, monkeypatch):
@@ -180,11 +179,11 @@ def test_code_generate_includes_tester_and_sandbox(api_client, monkeypatch):
 
     req = {"artifact": _sample_artifact_dict()}
     with client.stream("POST", "/code/generate", headers=_auth(), json=req) as resp:
-        lines = [json.loads(l) for l in resp.iter_lines() if l]
-        events = [l.get("event") for l in lines]
+        raw_events = [json.loads(line) for line in resp.iter_lines() if line]
+        events = [e.get("event") for e in raw_events]
         assert "artifact" in events
         # tester and sandbox should be present as types or events
-        assert any(l.get("type") in ("tester", "sandbox", "code") for l in lines)
+        assert any(e.get("type") in ("tester", "sandbox", "code") for e in raw_events)
 
 
 def test_code_analyze_echoes_artifact_validation(api_client):

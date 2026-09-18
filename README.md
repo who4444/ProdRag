@@ -38,6 +38,7 @@ Turns research papers and ideas into **runnable demo artifacts** — `demo.py + 
 * **Search Tool** (`backend/app/tools/search.py`): `web_search()` via Tavily/Serper/generic proxy; `enabled()` false → no-op. R&D subagents auto-append web hits when RAG `<2`; legacy agent exposes `web_search` as second tool when configured.
 * **R&D Subagents** (`backend/app/rd/subagent.py`): `rag_search` + web fallback → `ResearchSummary{findings, sources, confidence, gaps}`.
 * **Code Subagents** (`backend/app/code/subagent.py`): one LLM call per `FileTask` → `GeneratedFile{path, content}`.
+* **Repo RAG** (`backend/app/repo/` + `backend/app/tools/code_rag.py`): index a local repo (AST-aware chunks → Qdrant `code_chunks`, hybrid dense+BM25) and search it with `file:line` citations. Foundation for the feasibility phase.
 
 v1 demo is minimal: `demo.py` (toy data, `python`/`numpy`), `requirements.txt`, `test_demo.py` — sandbox-verified. Gradio/Docker are v2.
 
@@ -99,6 +100,10 @@ All except `GET /health` require `Authorization: Bearer $PRODRAG_API_TOKEN`.
 | `POST /tools/search` | POST | `{"query", k?}` | `{"enabled","results":[{title,url,snippet}],"formatted"}` | web_search (Tavily/Serper/generic), `[]` when unconfigured |
 | `GET /tools/search` | GET | `?query=&k=` | same | probe from browser (avoids 405) |
 | `GET /tools/search/status` | GET | — | `{"enabled":bool}` | |
+| `POST /repo/index` | POST | `{"path", repo_id?, name?}` | `{"repo_id","files","chunks","skipped","runtime_ms"}` | index a local repo (idempotent) |
+| `POST /repo/search` | POST | `{"query", k?, repo_id?, path_prefix?}` | `{"hits":[{path,symbol,kind,start_line,end_line,score}]}` | hybrid code search |
+| `GET /repo/list` | GET | — | `[repos]` | indexed repos |
+| `DELETE /repo/{repo_id}` | DELETE | — | `{"deleted":id}` | drops Qdrant points + row |
 | `GET /files/{object_key}` | GET | — | bytes | proxies Supabase Storage |
 
 NDJSON everywhere streaming (`application/x-ndjson`, each line `JSON + "\n"`).
@@ -131,6 +136,12 @@ curl -N -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 
 # Web search probe
 curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8000/tools/search?query=transformer+2024&k=3" | jq
+
+# Index a local repo and search it (repo RAG)
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"path":"/abs/path/to/repo"}' $API/repo/index | jq
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"query":"where is the sandbox runner","k":5}' $API/repo/search | jq
 ```
 
 ## Data Model (Supabase Postgres, `backend/app/core/schema.sql`)
@@ -145,6 +156,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "http://localhost:8000/tools/search?qu
 | `research_artifacts` | `run_id uuid` | `artifact jsonb` (ResearchArtifact), `validation jsonb` |
 | `code_runs` | `id uuid` | `artifact_run_id?`, `coding_spec jsonb`, `files jsonb`, `status` |
 | `code_artifacts` | `run_id uuid` | `artifact jsonb` (CodeArtifact), `sandbox jsonb` |
+| `repos` | `id text` | indexed codebases: `name`, `root`, `files`, `chunks`, `status`, `metadata` |
 
 Qdrant collections: `text_chunks` (bge-m3 1024 + BM25 sparse, RRF `Fusion.RRF`), `image_chunks` (CLIP 512), `episodes` (bge-m3 1024). Point IDs deterministic (`backend/app/core/vectorstore.py:82`).
 
@@ -166,9 +178,12 @@ Env: `PRODRAG_` prefix (`backend/app/config.py:6` reads `../.env` in Docker, `ba
 ## Local dev / tests
 
 ```bash
-uv sync --extra dev
-uv run pytest -q   # 137 tests (RD + code + search, pytest-asyncio)
-uv run uvicorn app.main:app --reload   # from backend/, needs local qdrant/redis + Supabase
+uv sync --extra dev --extra modal --extra frontend
+uv run pytest -q   # 171 tests (RD + code + search + repo RAG, pytest-asyncio)
+uv run ruff check backend/app backend/tests eval
+
+# zero-credential boot: in-memory Qdrant + deterministic hash embeddings
+PRODRAG_OFFLINE=1 uv run uvicorn app.main:app --reload   # from backend/
 ```
 
 ## Frontend
@@ -204,6 +219,7 @@ modal deploy deploy/modal/clip_service.py
 * `ensure_collections()` swallows 409 — safe for concurrent api+worker boot.
 * Point IDs deterministic → idempotent re-ingestion; re-ingest cleans orphans.
 * Search `enabled()` false → RAG-only, never raises (`backend/app/tools/search.py:19`); R&D subagents only call `web_search` when RAG `<2`.
+* Offline mode (`PRODRAG_OFFLINE=1`) runs in-memory Qdrant + deterministic hash embeddings with BM25-only code search — zero credentials, lower recall; real embeddings are the recommended path for semantic queries.
 * CORS `allow_origins=["*"]` in `backend/app/main.py` for `file://` test UI; restrict in prod.
 * Single `PRODRAG_API_TOKEN` Bearer auth (`backend/app/api/__init__.py:8`).
 ```

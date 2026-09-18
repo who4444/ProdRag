@@ -13,15 +13,19 @@ from .core import storage, vectorstore
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await storage.ensure_bucket()
+    if not settings.offline:
+        await storage.ensure_bucket()
     await vectorstore.ensure_collections()
-    app.state.redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
+    app.state.redis = None
+    if not settings.offline:
+        app.state.redis = await create_pool(RedisSettings.from_dsn(settings.redis_url))
     app.state.client = AsyncOpenAI(
         api_key=settings.chat_api_key,
         base_url=settings.chat_base_url or None,
     )
     yield
-    await app.state.redis.aclose()
+    if app.state.redis is not None:
+        await app.state.redis.aclose()
     await vectorstore.close_client()
 
 
@@ -38,5 +42,7 @@ app.include_router(router)
 
 @app.get("/health")
 async def health():
+    if settings.offline:
+        return {"status": "ok", "offline": True}
     await app.state.redis.ping()
     return {"status": "ok"}

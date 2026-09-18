@@ -9,6 +9,7 @@ from qdrant_client.models import (
     Distance,
     FieldCondition,
     Filter,
+    FilterSelector,
     Fusion,
     FusionQuery,
     MatchValue,
@@ -26,39 +27,49 @@ from .sparse import to_sparse
 logger = logging.getLogger(__name__)
 
 _client: AsyncQdrantClient | None = None
+_client_offline: bool | None = None
 
 
 async def get_client() -> AsyncQdrantClient:
-    global _client
-    if _client is None:
-        _client = AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+    global _client, _client_offline
+    if _client is None or _client_offline != settings.offline:
+        if _client is not None:
+            await _client.close()
+        if settings.offline:
+            _client = AsyncQdrantClient(location=":memory:")
+        else:
+            _client = AsyncQdrantClient(url=settings.qdrant_url, api_key=settings.qdrant_api_key)
+        _client_offline = settings.offline
     return _client
 
 
 async def close_client() -> None:
-    global _client
+    global _client, _client_offline
     if _client is not None:
         await _client.close()
         _client = None
+        _client_offline = None
 
 
 async def ensure_collections() -> None:
     client = await get_client()
+    hybrid = {settings.collection_text, settings.collection_code}
     for name, dim in (
         (settings.collection_text, settings.embedding_dim),
+        (settings.collection_code, settings.embedding_dim),
         (settings.collection_image, settings.vision_dim),
         (settings.memory_collection, settings.embedding_dim),
     ):
         if await client.collection_exists(name):
-            if name == settings.collection_text and not await _has_sparse(name, client):
+            if name in hybrid and not await _has_sparse(name, client):
                 logger.warning(
-                    "text collection '%s' lacks the 'bm25' sparse vector — delete it "
+                    "collection '%s' lacks the 'bm25' sparse vector — delete it "
                     "and re-ingest to enable hybrid retrieval",
                     name,
                 )
             continue
         try:
-            if name == settings.collection_text:
+            if name in hybrid:
                 await client.create_collection(
                     name,
                     vectors_config={"": VectorParams(size=dim, distance=Distance.COSINE)},
@@ -115,6 +126,31 @@ async def upsert_text(items: list[tuple[dict, list[float]]]) -> int:
     return len(points)
 
 
+async def upsert_code(items: list[tuple[dict, list[float]]]) -> int:
+    """Upsert code chunks into the code collection (dense + BM25 hybrid)."""
+    client = await get_client()
+    points = [
+        PointStruct(
+            id=_point_id("code", p),
+            vector={"": v, "bm25": SparseVector(**to_sparse(p["text"]))},
+            payload=p,
+        )
+        for p, v in items
+    ]
+    if not points:
+        return 0
+    try:
+        await client.upsert(settings.collection_code, points)
+    except UnexpectedResponse as exc:
+        if "bm25" in str(exc).lower() or "vector name" in str(exc).lower():
+            logger.warning("upsert_code bm25 failed on '%s' — falling back to dense", settings.collection_code)
+            dense_points = [PointStruct(id=pid.id, vector={"": vec}, payload=payload) for (payload, vec), pid in zip(items, points)]
+            await client.upsert(settings.collection_code, dense_points)
+        else:
+            raise
+    return len(points)
+
+
 async def upsert_image(items: list[tuple[dict, list[float]]]) -> int:
     client = await get_client()
     points = [PointStruct(id=_point_id("image", p), vector=v, payload=p) for p, v in items]
@@ -164,6 +200,72 @@ async def search_text(
         with_payload=True,
     )
     return [{"score": h.score, **h.payload} for h in res.points]
+
+
+async def search_code(
+    vector: list[float],
+    k: int,
+    repo_id: str | None = None,
+    sparse_query: dict | None = None,
+    prefetch_k: int | None = None,
+    path_prefix: str | None = None,
+) -> list[dict]:
+    """Hybrid code search (dense + BM25 RRF), filtered by repo and optional path prefix.
+
+    path_prefix is filtered client-side (Qdrant keyword match is exact), so the
+    first pass over-fetches when a prefix is given.
+    """
+    client = await get_client()
+    qf = None
+    if repo_id:
+        qf = Filter(must=[FieldCondition(key="repo_id", match=MatchValue(value=repo_id))])
+    fetch_k = max(k * 4, k + 20) if path_prefix else k
+    if sparse_query and prefetch_k and settings.offline:
+        # Offline dense vectors are lexical hashes — BM25 alone is the better ranker.
+        res = await client.query_points(
+            settings.collection_code,
+            query=SparseVector(**sparse_query),
+            using="bm25",
+            limit=fetch_k,
+            query_filter=qf,
+            with_payload=True,
+        )
+        hits = [{"score": h.score, **h.payload} for h in res.points]
+    elif sparse_query and prefetch_k:
+        try:
+            res = await client.query_points(
+                settings.collection_code,
+                prefetch=_hybrid_prefetch(vector, sparse_query, qf, max(prefetch_k, fetch_k)),
+                query=FusionQuery(fusion=Fusion.RRF),
+                limit=fetch_k,
+                with_payload=True,
+            )
+            hits = [{"score": h.score, **h.payload} for h in res.points]
+        except UnexpectedResponse:
+            logger.warning("hybrid code search failed on '%s' — falling back to dense", settings.collection_code)
+            res = await client.query_points(
+                settings.collection_code, query=vector, limit=fetch_k, query_filter=qf, with_payload=True
+            )
+            hits = [{"score": h.score, **h.payload} for h in res.points]
+    else:
+        res = await client.query_points(
+            settings.collection_code, query=vector, limit=fetch_k, query_filter=qf, with_payload=True
+        )
+        hits = [{"score": h.score, **h.payload} for h in res.points]
+    if path_prefix:
+        hits = [h for h in hits if str(h.get("path", "")).startswith(path_prefix)]
+    return hits[:k]
+
+
+async def delete_code_by_repo(repo_id: str) -> None:
+    """Delete every code point for a repo (re-index / repo delete)."""
+    client = await get_client()
+    await client.delete(
+        settings.collection_code,
+        points_selector=FilterSelector(
+            filter=Filter(must=[FieldCondition(key="repo_id", match=MatchValue(value=repo_id))])
+        ),
+    )
 
 
 async def search_images(vector: list[float], k: int) -> list[dict]:
