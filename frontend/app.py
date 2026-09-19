@@ -19,6 +19,8 @@ from api import (
     document_delete,
     document_reingest,
     document_status,
+    feasibility_stream,
+    feasibility_understand,
     get_code_run,
     get_conversation_messages,
     get_file,
@@ -33,6 +35,9 @@ from api import (
     query_stream,
     rd_analyze,
     rd_research_stream,
+    repo_index,
+    repo_list,
+    repo_search,
     research_stream,
     upload_document,
     web_search_probe,
@@ -75,8 +80,8 @@ with st.sidebar:
         pass
     st.caption("TTL: research 30d / code 30d / episodes 7d / conv 1d (lazy)")
 
-tab_upload, tab_query, tab_research, tab_rd, tab_code, tab_memory, tab_runs = st.tabs(
-    ["Documents", "Ask", "Research", "R&D", "Code", "Memory", "Runs"]
+tab_upload, tab_query, tab_research, tab_rd, tab_feasibility, tab_code, tab_memory, tab_runs = st.tabs(
+    ["Documents", "Ask", "Research", "R&D", "Feasibility", "Code", "Memory", "Runs"]
 )
 
 
@@ -429,6 +434,206 @@ with tab_rd:
     if col_clear.button("Clear R&D state"):
         st.session_state["rd_requirements"] = None
         st.session_state["rd_questions"] = None
+        st.rerun()
+
+
+# ----------------------------------------------------------------------------
+# Feasibility tab: idea + indexed repo -> cited feasibility report
+# ----------------------------------------------------------------------------
+with tab_feasibility:
+    st.subheader("Feasibility — idea against a codebase")
+    st.caption(
+        "Index a local repo (AST-aware chunks + hybrid search), then judge technical / "
+        "integration / data plausibility. Every verdict must cite file:line evidence."
+    )
+
+    if "repo_id" not in st.session_state:
+        st.session_state["repo_id"] = ""
+    if "feas_questions" not in st.session_state:
+        st.session_state["feas_questions"] = None
+    if "feas_understanding" not in st.session_state:
+        st.session_state["feas_understanding"] = None
+
+    with st.expander("Codebase index", expanded=not st.session_state["repo_id"]):
+        repo_path = st.text_input("Local repo path", placeholder="/abs/path/to/repo", key="repo_path_input")
+        if st.button("Index repo", key="repo_index_btn", disabled=not repo_path.strip()):
+            try:
+                stats = repo_index(api_url, api_token, repo_path.strip())
+            except APIError as exc:
+                st.error(f"Index failed: {exc}")
+            else:
+                st.session_state["repo_id"] = stats["repo_id"]
+                st.success(
+                    f"Indexed {stats['files']} files → {stats['chunks']} chunks "
+                    f"({stats['skipped']} skipped) in {stats['runtime_ms']} ms"
+                )
+        try:
+            repos = repo_list(api_url, api_token)
+        except APIError:
+            repos = []
+        if repos:
+            options = {f"{r.get('name')} · {r['id']} · {r.get('chunks', 0)} chunks": r["id"] for r in repos}
+            ids = list(options.values())
+            current = st.session_state.get("repo_id")
+            picked = st.selectbox(
+                "Indexed repos",
+                list(options),
+                index=ids.index(current) if current in ids else 0,
+                key="repo_pick",
+            )
+            st.session_state["repo_id"] = options[picked]
+        repo_query = st.text_input("Code search (sanity check)", key="repo_query_input")
+        if st.button("Search", key="repo_search_btn", disabled=not repo_query.strip()):
+            try:
+                res = repo_search(api_url, api_token, repo_query.strip(), st.session_state["repo_id"], 5)
+            except APIError as exc:
+                st.error(f"Search failed: {exc}")
+            else:
+                for h in res.get("hits", []):
+                    st.markdown(
+                        f"`{h['path']}:{h.get('start_line')}-{h.get('end_line')}` "
+                        f"({h.get('kind')}, score {h.get('score')})"
+                    )
+
+    feas_idea = st.text_area(
+        "Idea",
+        placeholder="e.g. Add a semantic cache in front of retrieval to cut repeated-query cost",
+        key="feas_idea",
+    )
+    col_understand, col_clear = st.columns([1, 1])
+    if col_understand.button("Understand idea", disabled=not feas_idea.strip(), key="feas_understand_btn"):
+        try:
+            res = feasibility_understand(api_url, api_token, feas_idea)
+        except APIError as exc:
+            st.error(f"Understand failed: {exc}")
+        else:
+            if res.get("ready"):
+                st.session_state["feas_understanding"] = res["understanding"]
+                st.session_state["feas_questions"] = None
+            else:
+                st.session_state["feas_understanding"] = None
+                st.session_state["feas_questions"] = res.get("questions", [])
+
+    if st.session_state.get("feas_questions"):
+        st.info("Clarify before spending feasibility effort:")
+        answers = [
+            st.text_input(f"Q{i + 1}: {q}", key=f"feas_ans_{i}")
+            for i, q in enumerate(st.session_state["feas_questions"])
+        ]
+        if st.button("Submit answers", key="feas_answers_btn"):
+            try:
+                res = feasibility_understand(api_url, api_token, feas_idea, [a for a in answers if a.strip()])
+            except APIError as exc:
+                st.error(f"Understand failed: {exc}")
+            else:
+                if res.get("ready"):
+                    st.session_state["feas_understanding"] = res["understanding"]
+                    st.session_state["feas_questions"] = None
+                    st.rerun()
+                else:
+                    st.session_state["feas_questions"] = res.get("questions", [])
+
+    understanding = st.session_state.get("feas_understanding")
+    if understanding:
+        with st.expander("What I think you want (assumptions / hypotheses / ambiguities)", expanded=True):
+            st.json(understanding)
+
+    if st.button(
+        "Run feasibility",
+        type="primary",
+        key="feas_start",
+        disabled=not (feas_idea.strip() and st.session_state.get("repo_id")),
+    ):
+        try:
+            resp = feasibility_stream(
+                api_url, api_token, feas_idea, st.session_state["repo_id"], understanding
+            )
+        except APIError as exc:
+            st.error(f"Feasibility failed: {exc}")
+        else:
+            try:
+                with resp:
+                    for line in resp.iter_lines(decode_unicode=True):
+                        if not line:
+                            continue
+                        try:
+                            evt = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if evt.get("type") != "feasibility":
+                            continue
+                        event = evt.get("event")
+                        if event == "start":
+                            st.caption(f"run {evt.get('run_id', '')[:8]} · repo {evt.get('repo_id')}")
+                        elif event == "clarify":
+                            st.warning(f"Clarification needed: {evt.get('questions')}")
+                        elif event == "understand":
+                            with st.expander("Understanding", expanded=True):
+                                st.json(evt["understanding"])
+                        elif event == "map":
+                            cmap = evt["codebase_map"]
+                            st.markdown(
+                                f"**Map:** {len(cmap.get('modules', []))} modules · "
+                                f"{len(cmap.get('dependency_edges', []))} edges · "
+                                f"{len(cmap.get('impacted_modules', []))} impacted"
+                            )
+                            if cmap.get("extension_points"):
+                                st.caption(
+                                    "extension points: "
+                                    + ", ".join(
+                                        f"{ep['path']}::{ep.get('symbol', '')}" for ep in cmap["extension_points"]
+                                    )
+                                )
+                            if cmap.get("data_missing"):
+                                st.caption(f"data missing: {cmap['data_missing']}")
+                        elif event == "claim":
+                            c = evt["claim"]
+                            refs = ", ".join(
+                                f"{r['path']}:{r.get('start_line')}-{r.get('end_line')}"
+                                for r in c.get("evidence", [])
+                                if r.get("valid")
+                            )
+                            st.markdown(f"**[{c['dimension']}/{c['status']}]** {c['statement'][:300]}")
+                            if refs:
+                                st.caption(f"evidence: {refs}")
+                            elif c.get("evidence"):
+                                st.caption("no valid evidence")
+                        elif event == "report":
+                            r = evt["data"]
+                            st.session_state["last_feasibility"] = r
+                            if r["verdict"] == "plausible":
+                                st.success(f"Verdict: {r['verdict']}")
+                            elif r["verdict"] == "plausible_with_risks":
+                                st.warning(f"Verdict: {r['verdict']}")
+                            else:
+                                st.error(f"Verdict: {r['verdict']}")
+                            for dim in ("technical", "integration", "data"):
+                                v = r.get("dimensions", {}).get(dim, {})
+                                st.markdown(
+                                    f"**{dim}** — {'plausible' if v.get('plausible') else 'not plausible'} · "
+                                    f"{v.get('rationale', '')[:240]}"
+                                )
+                                if v.get("blockers"):
+                                    st.caption("blockers: " + "; ".join(v["blockers"]))
+                            if r.get("blockers"):
+                                st.warning("Blockers: " + "; ".join(r["blockers"]))
+                            if r.get("alternatives"):
+                                st.info("Alternatives: " + " | ".join(r["alternatives"]))
+                            if r.get("reframed_idea"):
+                                st.markdown(f"**Reframed idea:** {r['reframed_idea']}")
+                            st.caption(
+                                f"claims: {len(r.get('claims', []))} · "
+                                f"llm calls: {r.get('usage', {}).get('calls', 0)} · "
+                                f"cost: ${r.get('usage', {}).get('cost_usd', 0)}"
+                            )
+                            with st.expander("Full report"):
+                                st.json(r)
+            except Exception as exc:
+                st.error(f"Stream interrupted: {exc}")
+
+    if col_clear.button("Clear feasibility state", key="feas_clear"):
+        st.session_state["feas_understanding"] = None
+        st.session_state["feas_questions"] = None
         st.rerun()
 
 

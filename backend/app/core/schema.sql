@@ -106,11 +106,53 @@ create table if not exists public.repos (
   updated_at    timestamptz not null default now()
 );
 
+-- Feasibility phase — runs + cited reports (repo-grounded)
+create table if not exists public.feasibility_runs (
+  id            uuid primary key,
+  repo_id       text not null,
+  idea          text not null,
+  understanding jsonb not null default '{}'::jsonb,
+  status        text not null default 'running',
+  verdict       text,
+  created_at    timestamptz not null default now(),
+  expires_at    timestamptz
+);
+
+create table if not exists public.feasibility_reports (
+  run_id        uuid primary key references public.feasibility_runs(id) on delete cascade,
+  report        jsonb not null,
+  created_at    timestamptz not null default now()
+);
+
+-- Graph control layer — runs + append-only evidence ledger
+create table if not exists public.rd_runs (
+  id            uuid primary key,
+  repo_id       text not null,
+  idea          text not null,
+  status        text not null default 'running',
+  result        jsonb,
+  created_at    timestamptz not null default now(),
+  expires_at    timestamptz
+);
+
+create table if not exists public.rd_events (
+  id            bigserial primary key,
+  run_id        uuid not null,
+  type          text not null default '',
+  data          jsonb not null,
+  created_at    timestamptz not null default now()
+);
+
+create index if not exists rd_events_run_idx on public.rd_events (run_id, id);
+
 -- v2.0: TTL + history indexes (lazy expiry: WHERE expires_at IS NULL OR expires_at > now())
 create index if not exists research_runs_created_at_idx on public.research_runs (created_at desc);
 create index if not exists research_runs_session_idx on public.research_runs (session_id);
 create index if not exists code_runs_created_at_idx on public.code_runs (created_at desc);
 create index if not exists repos_created_at_idx on public.repos (created_at desc);
+create index if not exists feasibility_runs_created_at_idx on public.feasibility_runs (created_at desc);
+create index if not exists feasibility_runs_repo_idx on public.feasibility_runs (repo_id);
+create index if not exists rd_runs_created_at_idx on public.rd_runs (created_at desc);
 create index if not exists episodes_created_at_idx on public.episodes (created_at desc);
 create index if not exists conversations_created_at_idx on public.conversations (created_at desc);
 

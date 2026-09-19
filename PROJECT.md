@@ -27,7 +27,7 @@ idea -> [Analyzer] -> Requirements -> [Orchestrator -> Subagents x5] -> [Validat
 
 ---
 
-## 2. Current state (verified 2026-09-18 — v1: idea -> research -> code + repo RAG M1, 171 tests)
+## 2. Current state (verified 2026-09-19 — v1: idea -> research -> code + repo RAG M1 + feasibility M2 + LangGraph runs M3, 217 tests)
 
 The system is a working multimodal RAG pipeline extended with the R&D research pipeline and the **code generation pipeline** (artifact -> sandbox-tested demo). Everything below is running/verified except where noted.
 
@@ -49,8 +49,11 @@ The system is a working multimodal RAG pipeline extended with the R&D research p
 | R&D Pipeline   | `backend/app/rd/{analyzer,orchestrator,subagent,validator,artifacts,pipeline}.py` | idea -> research -> artifact |
 | Code Pipeline  | `backend/app/code/{analyzer,orchestrator,subagent,tester,sandbox,pipeline}.py` | artifact -> sandbox-tested demo (`demo.py`+`test_demo.py`) |
 | Repo indexing  | `backend/app/repo/{walker,chunker,indexer}.py` + `tools/code_rag.py` | local path -> AST chunks -> Qdrant `code_chunks` (repo RAG, M1) |
+| Feasibility    | `backend/app/feasibility/{understand,codebase_map,planner,subagent,judge,citation,pipeline}.py` | idea + repo -> cited technical/integration/data verdict (M2) |
+| Run control    | **LangGraph** `backend/app/runs/{state,graph,nodes,controller,checkpoint,evaluate,bridge}.py` | durable graph run: feasibility -> PoC -> eval, interrupts, budget edges (M3) |
+| Checkpoints    | `langgraph-checkpoint-postgres` (Supabase) / `InMemorySaver` offline | resumable runs across restarts |
 | Offline mode   | `PRODRAG_OFFLINE=1` (`core/vectorstore.py`, `core/embeddings/text.py`, `core/db.py`) | in-memory Qdrant + hash embeddings, zero credentials |
-| LLM ledger     | `backend/app/core/llm.py` | `chat_json()` structured output + token/cost per run |
+| LLM ledger     | `backend/app/core/llm.py` | `chat_json()` structured output + per-run token/cost ledger (graph-aware) |
 | Frontend       | Streamlit (`frontend/app.py`) + `frontend/simple_test.html` | Documents + Ask + Research + R&D + simple test UIs |
 | Eval           | `eval/recall.py` (Recall@k vs golden set) | artifact/code faithfulness planned |
 
@@ -69,6 +72,9 @@ backend/app/           # FastAPI + worker package (organized by concern)
     research.py        # /research (legacy single-loop agent)
     rd.py              # /rd/analyze, /rd/research (R&D pipeline)
     code.py            # /code/analyze, /code/generate (code pipeline)
+    repo.py            # /repo/index|search|list|get|delete (codebase indexing)
+    feasibility.py     # /feasibility/understand + /feasibility/analyze + /feasibility/runs
+    runs.py            # /runs (start/resume graph run) + /runs/{id}
     tools.py           # /tools/search (web search probe, GET+POST)
   core/                # infrastructure
     storage.py         # Supabase Storage REST client (httpx, secret API key)
@@ -88,6 +94,25 @@ backend/app/           # FastAPI + worker package (organized by concern)
     chunker.py         # AST-aware chunks (function/class/method/block, line ranges, imports)
     indexer.py         # walk -> chunk -> embed (batched) -> code_chunks; idempotent re-index
     schemas.py         # RepoIndexRequest/SearchRequest/CodeChunk/RepoStats
+  feasibility/         # Feasibility phase (M2)
+    understand.py      # idea -> interpretation/assumptions/hypotheses/ambiguities (handshake)
+    codebase_map.py    # deterministic modules/edges/entrypoints/impacted + LLM enrichment
+    planner.py         # fixed 3 dimensions: technical | integration | data
+    subagent.py        # code_search -> cited claims (one per dimension, parallel)
+    citation.py        # deterministic evidence gate (path/line validation, supported/unsupported)
+    judge.py           # dimension verdicts + evidence gate + final verdict/blockers/alternatives
+    pipeline.py        # feasibility_analyze() top-level orchestrator (NDJSON events)
+    schemas.py         # IdeaUnderstanding, EvidenceRef, FeasibilityClaim, CodebaseMap, Report
+  runs/                # LangGraph control layer (M3)
+    state.py           # RunState TypedDict threaded through nodes (events via add reducer)
+    graph.py           # StateGraph + deterministic conditional edges (budget/retry/reframe)
+    nodes.py           # graph nodes wrapping feasibility/, code/, evaluation; interrupt() at clarify/reframe
+    bridge.py          # FeasibilityReport -> ResearchArtifact (PoC conditioned on feasibility evidence)
+    evaluate.py        # deterministic runnability/spec checks + LLM hypothesis judge -> EvaluationReport
+    instrument.py      # UsageTrackingClient: PoC LLM calls count toward the run ledger
+    checkpoint.py      # AsyncPostgresSaver (prod) / InMemorySaver (offline) factory
+    controller.py      # start_run/resume_run/get_run_state -> NDJSON stream
+    schemas.py         # RunRequest/ResumeRequest/EvaluationReport/RunResult
   rd/                  # R&D pipeline (idea -> research -> artifact)
     schemas.py         # Requirements, Direction, ResearchSummary, Validation, ResearchArtifact
     analyzer.py        # second-request handshake, no KB
@@ -114,7 +139,7 @@ backend/app/           # FastAPI + worker package (organized by concern)
   agent.py             # research(): single tool-calling loop (now with optional web_search tool)
   memory.py            # conv (Supabase messages) + episodic (Qdrant + Supabase)
   worker.py            # arq WorkerSettings
-backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_llm_usage.py, test_offline_mode.py, test_search.py (171 tests)
+backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_feasibility_*_spec.py, test_runs_*_spec.py, test_llm_usage.py, test_offline_mode.py, test_search.py (217 tests)
 deploy/docker-compose.yml   # qdrant + redis + api + worker (no MinIO anymore)
 deploy/modal/          # embed_service.py, clip_service.py, search_proxy.py example, manage.sh, README.md
 frontend/              # Streamlit app.py + api.py + simple_test.html (Documents / Ask / Research / R&D + simple test UIs)
@@ -152,6 +177,8 @@ System of record for entities & lifecycle; Qdrant stays vector-only. DDL lives i
 | `code_runs` | code generation runs: `id, artifact_run_id?, coding_spec jsonb, files jsonb, status, created_at` |
 | `code_artifacts` | code artifacts: `run_id fk, artifact jsonb (CodeArtifact), sandbox jsonb, created_at` |
 | `repos` | indexed codebases: `id text pk (sha256 of resolved root), name, root, files, chunks, status, metadata jsonb` |
+| `feasibility_runs` | feasibility runs: `id uuid, repo_id, idea, understanding jsonb, status, verdict, created_at` |
+| `feasibility_reports` | cited reports: `run_id fk, report jsonb (FeasibilityReport), created_at` |
 
 Env: `PRODRAG_DATABASE_URL` (Postgres connection string). Driver: `supabase` REST client (`core/db.py`). Endpoints: `GET /documents`, `DELETE /documents/{id}`, `/rd/*`, `/code/*`, `/tools/search`.
 
@@ -174,6 +201,12 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN` (except `GET /h
 - `POST /repo/index` — `{path, repo_id?, name?}` (local path) → `RepoStats{repo_id, name, root, files, chunks, skipped, runtime_ms}`. Deterministic repo id; re-index deletes old points first.
 - `POST /repo/search` — `{query, k?, repo_id?, path_prefix?}` → `{hits:[{path, symbol, kind, start_line, end_line, score, snippet}]}` (hybrid; offline lexical rerank).
 - `GET /repo/list` / `GET /repo/{id}` / `DELETE /repo/{id}` — list / fetch / delete an indexed repo (delete drops Qdrant points + row).
+- `POST /feasibility/understand` — `{idea, answers?, session_id?}` → `{ready, understanding?, questions?}` (plain JSON, second-request handshake).
+- `POST /feasibility/analyze` — `{idea, repo_id, understanding?, answers?, k?}` → NDJSON `feasibility/start`, `understand|clarify`, `map`, `claim` xN, `report` (FeasibilityReport). 400 when the repo is not indexed.
+- `GET /feasibility/runs` / `GET /feasibility/runs/{id}` — list / fetch run + persisted report.
+- `POST /runs` — `{idea, repo_id, k?, max_llm_calls?, max_wall_s?}` → NDJSON graph run: `run/start`, `feasibility/*`, `poc/*`, `eval/result`, `run/interrupt` (clarify / reframe), `run/result`.
+- `POST /runs/{id}/resume` — `{answers?}` for clarify or `{accept?, idea?}` for reframe → continues the checkpointed run.
+- `GET /runs` / `GET /runs/{id}` — run list / `{run, state, events}` (checkpoint state + evidence ledger).
 - `GET  /files/{object_key:path}` — fetch a stored figure (proxies storage)
 
 ### 2.5 Env inventory (`PRODRAG_` prefix)
@@ -189,7 +222,8 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN` (except `GET /h
 `retrieval_hybrid_k`, `rerank_service_url`, `rerank_service_token`, `rerank_model`,
 `tavily_api_key`, `serper_api_key`, `search_service_url`, `search_service_token`, `search_max_results`,
 `offline`, `collection_code`, `repo_max_files`, `repo_max_file_bytes`, `repo_chunk_max_lines`,
-`repo_chunk_overlap_lines`, `llm_input_price_per_mtok`, `llm_output_price_per_mtok`.
+`repo_chunk_overlap_lines`, `llm_input_price_per_mtok`, `llm_output_price_per_mtok`,
+`feasibility_run_ttl_s`, `rd_run_ttl_s`.
 
 Two `.env` files: repo-root `.env` (used by docker compose) and `backend/.env` (used when running uvicorn from `backend/`). Both gitignored.
 
@@ -438,6 +472,77 @@ Legacy `/research` events (`memory/session`, `agent/tool_call`, etc.) remain unc
 
 ---
 
+### 4.12 Feasibility pipeline design — `backend/app/feasibility/` (M2)
+
+`idea + indexed repo -> cited feasibility report`. Every plausibility verdict must cite
+`file:line` evidence that resolves in the repo; the LLM proposes, the filesystem decides.
+
+```
+POST /feasibility/understand  (handshake, no repo)
+        │  {ready:false, questions:[...]}  ->  client re-POSTs with answers
+        │  {ready:true, understanding:{interpretation, problem, expected_outcome,
+        │                              assumptions[], hypotheses[], ambiguities[]}}
+        ▼
+POST /feasibility/analyze {idea, repo_id, understanding?}
+        │
+        ├─ static_map       walker + AST imports -> modules, edges, entrypoints,
+        │                   impacted (reverse-dep closure), data files   (0 LLM)
+        ├─ enrich_map       one LLM call: extension_points, data_flow,
+        │                   data_available/missing/cleanliness (paths validated)
+        ├─ subagents x3     technical | integration | data: code_search -> claims
+        │                   (parallel asyncio.gather; LLM failure -> provisional claim)
+        ├─ citation gate    evidence path + line range must resolve; provisional => unsupported;
+        │                   dimension cannot be plausible without >=1 supported claim
+        └─ judge            LLM writes rationale/blockers/alternatives/reframe, then the gate
+                            maps: 0 implausible -> plausible(_with_risks); 1 -> with_risks;
+                            2+ -> infeasible. Emit-with-risks: never blocks.
+```
+
+* **Verdict rules are deterministic** (`judge.apply_evidence_gate`): the LLM cannot mark a
+  dimension plausible without a valid citation. This is the core invariant of the phase.
+* **Failure behavior:** LLM/search failures produce `provisional=True` claims (status
+  `unsupported`), so the report is still emitted with blockers + fallback alternatives.
+* **Events (NDJSON):** `feasibility/start`, `understand|clarify`, `map`, `claim` xN, `report`.
+* **Persistence:** `feasibility_runs` + `feasibility_reports` (best-effort, offline uses an
+  in-memory store). `report.usage` carries the token/cost ledger for the run.
+* **Repos:** resolve via `repos.root`; unknown/deleted path -> HTTP 400 before streaming.
+
+### 4.13 Run control layer — `backend/app/runs/` (M3, LangGraph)
+
+One durable graph per run: feasibility → PoC → evaluation, with deterministic routing
+(no LLM picks the next node), human interrupts, bounded cycles, and budget edges.
+
+```
+START -> understand -> {understanding? codebase_map : clarify(interrupt)}
+clarify ------------ -> understand                (answers from /runs/{id}/resume)
+codebase_map ------- -> assess                    (3 dimensions, asyncio.gather)
+assess ------------- -> evidence_gate -> judge
+judge -------------- -> reframe(interrupt)        (verdict != plausible, reframes < 1)
+                    -> poc_generate               (otherwise)
+reframe ------------ -> understand                (accepted: new idea loops once)
+                    -> finalize                   (declined)
+poc_generate ------- -> evaluate
+                    -> poc_retry (<=1) -> evaluate
+evaluate ----------- -> finalize -> END
+```
+
+* **Durability:** `AsyncPostgresSaver(PRODRAG_DATABASE_URL)` in prod; `InMemorySaver`
+  offline or when the DB is unreachable. A paused run resumes with `Command(resume=...)`
+  after a process restart (checkpointed thread = run_id).
+* **Budget edges:** `route_*` functions check `max_llm_calls` / `max_wall_s` from state and
+  short-circuit to `finalize` (`status=budget_exceeded`). Token/cost come from the per-run
+  ledger; `runs/instrument.py:UsageTrackingClient` makes PoC LLM calls count too.
+* **Evidence ledger:** every emitted payload is appended to `state.events` (add reducer)
+  and to the `rd_events` table (best-effort) — `GET /runs/{id}` returns both.
+* **PoC bridge:** `bridge.report_to_artifact` converts the cited FeasibilityReport into a
+  `ResearchArtifact` (claims → summaries, blockers → risks, hypotheses → acceptance criteria,
+  extension points → pseudocode), so the standalone demo is conditioned on feasibility.
+* **Evaluation:** deterministic runnability/tests/spec from `SandboxResult`, plus one LLM
+  hypothesis judge; degrades to `not evaluated` on failure. Report carries runtime, wall time,
+  LLM calls, cost.
+* **Never blocks:** nodes catch their own failures and mark claims/statuses; finalize always
+  emits a `RunResult` (emit-with-risks).
+
 ## 5. Memory layer design
 
 ### 5.1 Conversation memory (short-term, per session)
@@ -522,6 +627,8 @@ repo_chunk_max_lines=80
 repo_chunk_overlap_lines=10
 llm_input_price_per_mtok=0.27       # cost ledger (core/llm.py)
 llm_output_price_per_mtok=1.10
+feasibility_run_ttl_s=2592000       # 30d (feasibility_runs)
+rd_run_ttl_s=2592000                # 30d (graph runs)
 ```
 
 ---
@@ -567,10 +674,10 @@ Not built yet (YAGNI until requested):
 - **Phase 5 — hardening.** Docker/gVisor sandbox, `GET /code/runs` history, Storage objects for large code artifacts, auto-retry on sandbox fail.
 - **Phase 6 — eval for agentic quality.** extend `eval/` beyond recall@k: answer faithfulness (citation coverage) + R&D artifact + code sandbox pass rate.
 - **M0 — foundation (DONE).** Offline mode (`PRODRAG_OFFLINE=1`: in-memory Qdrant, hash embeddings, no Supabase/Redis), `core/llm.py` usage/cost ledger, ruff + GitHub Actions CI. 137 -> 171 tests.
-- **M1 — repo indexing / code-aware RAG (DONE).** `backend/app/repo/` walker + AST chunker + indexer, Qdrant `code_chunks` (hybrid), `tools/code_rag.py`, `/repo/{index,search,list,get,delete}`, `repos` table. Evidence: ProdRag self-index (119 files -> 676 chunks) in ~0.8s offline / ~180s cold Modal; `code_search("where is the sandbox run and subprocess")` -> `backend/app/code/sandbox.py` #2 with real embeddings.
-- **M2 — grounded feasibility (next).** `backend/app/feasibility/` (understand -> deterministic codebase map -> technical/integration/data subagents with citations -> evidence gate -> judge), `POST /feasibility/*`, `feasibility_runs/reports`, Streamlit tab, golden-set eval (grounded vs LLM-only baseline).
-- **M3 — PoC + eval + controller.** feasibility-conditioned `code/` generation, `EvaluationReport` (hypotheses/spec/cost/latency), deterministic `runs/` controller + `rd_events` evidence ledger, CLI.
-- **M4 — portfolio packaging.** README v3, ADRs, `eval/feasibility_eval.py` + golden set, demo script.
+- **M1 — repo indexing / code-aware RAG (DONE).** `backend/app/repo/` walker + AST chunker + indexer, Qdrant `code_chunks` (hybrid), `tools/code_rag.py`, `/repo/{index,search,list,get,delete}`, `repos` table. Evidence: ProdRag self-index (119 -> 138 files, 676 -> 814 chunks as the repo grew) in ~0.8s offline / ~180s cold Modal; `code_search("where is the sandbox run and subprocess")` -> `backend/app/code/sandbox.py` #2 with real embeddings, #1 offline (lexical rerank).
+- **M2 — grounded feasibility (DONE).** `backend/app/feasibility/` (understand handshake -> deterministic codebase map + LLM enrichment -> technical/integration/data subagents with citations -> deterministic evidence gate -> judge -> `FeasibilityReport`), `POST /feasibility/{understand,analyze,runs}`, `feasibility_runs/reports`, Streamlit Feasibility tab. Tests: `test_feasibility_*_spec.py`. 171 -> 201 tests.
+- **M3 — LangGraph control layer + PoC + eval (DONE).** Deps `langgraph` + `langgraph-checkpoint-postgres` (core). `backend/app/runs/`: deterministic StateGraph (understand → clarify interrupt → codebase_map → assess x3 → evidence gate → judge → reframe interrupt → PoC → debug ≤1 → evaluate → finalize), `AsyncPostgresSaver`/`InMemorySaver` checkpoints, per-run usage ledger with `UsageTrackingClient` for PoC calls, `rd_runs`/`rd_events` persistence, `POST /runs` + `POST /runs/{id}/resume` + `GET /runs/{id}`. Tests: `test_runs_*_spec.py` (15). 202 → 217 tests. Deviation from plan: the 3 dimensions run inside one `assess` node via `asyncio.gather` instead of LangGraph `Send` fan-out — simpler state (claims are replaceable on reframe) with the same concurrency.
+- **M4 — portfolio packaging (next).** README v3, ADRs, `eval/feasibility_eval.py` + frozen golden set (2 external repos, n=20, LLM-only baseline), results JSON/table, demo script, Streamlit run-graph controls.
 
 ---
 
@@ -587,7 +694,7 @@ docker compose -f deploy/docker-compose.yml up --build
 psql "$PRODRAG_DATABASE_URL" -f backend/app/core/schema.sql
 # or paste backend/app/core/schema.sql into Supabase SQL editor
 
-# tests (171, pytest-asyncio) + lint
+# tests (217, pytest-asyncio) + lint
 uv run pytest -q
 uv run ruff check backend/app backend/tests eval
 
@@ -600,7 +707,7 @@ curl -s -H "Authorization: Bearer $PRODRAG_API_TOKEN" -H "Content-Type: applicat
   -d '{"query":"where is the sandbox runner","k":5}' localhost:8000/repo/search | jq
 
 # frontend
-cd frontend && uv run streamlit run app.py          # 4 tabs
+cd frontend && uv run streamlit run app.py          # 8 tabs (incl. Feasibility)
 open frontend/simple_test.html                       # pure HTML/JS test UI (no build)
 # or
 cd frontend && uv run streamlit run simple_test_app.py  # minimal 3-tab test app

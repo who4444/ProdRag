@@ -216,6 +216,8 @@ async def research_artifact_get(run_id: str) -> dict | None:
 # --------------------------------------------------------------------------
 
 async def code_run_create(run_id: str, artifact_run_id: str | None, artifact: dict, status: str = "running") -> None:
+    if _offline():
+        return
     coding_spec = artifact.get("coding_spec") if isinstance(artifact, dict) and "coding_spec" in artifact else artifact
     expires = _expires_at(settings.code_run_ttl_s)
     payload: dict = {"id": run_id, "artifact_run_id": artifact_run_id, "coding_spec": coding_spec if isinstance(coding_spec, dict) else {}, "files": [], "status": status}
@@ -240,6 +242,8 @@ async def code_run_list(limit: int = 20, offset: int = 0, artifact_run_id: str |
 
 
 async def code_run_update(run_id: str, fields: dict) -> None:
+    if _offline():
+        return
     await _run(_client().table("code_runs").update(fields).eq("id", run_id).execute)
 
 
@@ -249,6 +253,8 @@ async def code_run_get(run_id: str) -> dict | None:
 
 
 async def code_artifact_upsert(run_id: str, artifact: dict, sandbox: dict) -> None:
+    if _offline():
+        return
     await _run(
         _client().table("code_artifacts").upsert(
             {"run_id": run_id, "artifact": artifact, "sandbox": sandbox}
@@ -308,3 +314,170 @@ async def repo_delete(repo_id: str) -> None:
         _offline_repos.pop(repo_id, None)
         return
     await _run(_client().table("repos").delete().eq("id", repo_id).execute)
+
+
+# --------------------------------------------------------------------------
+# feasibility_runs / feasibility_reports (feasibility phase)
+# --------------------------------------------------------------------------
+
+_offline_feasibility_runs: dict[str, dict] = {}
+_offline_feasibility_reports: dict[str, dict] = {}
+
+
+def _now_iso() -> str:
+    import datetime
+
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+async def feasibility_run_create(run_id: str, repo_id: str, idea: str, understanding: dict) -> None:
+    if _offline():
+        _offline_feasibility_runs[run_id] = {
+            "id": run_id,
+            "repo_id": repo_id,
+            "idea": idea,
+            "understanding": understanding,
+            "status": "running",
+            "verdict": None,
+            "created_at": _now_iso(),
+        }
+        return
+    expires = _expires_at(settings.feasibility_run_ttl_s)
+    payload: dict = {
+        "id": run_id,
+        "repo_id": repo_id,
+        "idea": idea,
+        "understanding": understanding,
+        "status": "running",
+    }
+    if expires:
+        payload["expires_at"] = expires
+    await _run(_client().table("feasibility_runs").insert(payload).execute)
+
+
+async def feasibility_run_update(run_id: str, fields: dict) -> None:
+    if _offline():
+        row = _offline_feasibility_runs.get(run_id)
+        if row:
+            row.update(fields)
+        return
+    await _run(_client().table("feasibility_runs").update(fields).eq("id", run_id).execute)
+
+
+async def feasibility_run_get(run_id: str) -> dict | None:
+    if _offline():
+        return _offline_feasibility_runs.get(run_id)
+    res = await _run(_client().table("feasibility_runs").select("*").eq("id", run_id).execute)
+    return (res.data or [None])[0]
+
+
+async def feasibility_run_list(
+    limit: int = 20, offset: int = 0, repo_id: str | None = None, status: str | None = None
+) -> list[dict]:
+    if _offline():
+        rows = list(_offline_feasibility_runs.values())
+        rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return rows[offset : offset + limit]
+    q = _client().table("feasibility_runs").select("*").order("created_at", desc=True).limit(limit + offset)
+    if repo_id:
+        q = q.eq("repo_id", repo_id)
+    if status:
+        q = q.eq("status", status)
+    res = await _run(q.execute)
+    data = res.data
+    return data[offset : offset + limit] if offset else data[:limit]
+
+
+async def feasibility_report_upsert(run_id: str, report: dict) -> None:
+    if _offline():
+        _offline_feasibility_reports[run_id] = {
+            "run_id": run_id,
+            "report": report,
+            "created_at": _now_iso(),
+        }
+        return
+    await _run(
+        _client().table("feasibility_reports").upsert({"run_id": run_id, "report": report}).execute
+    )
+
+
+async def feasibility_report_get(run_id: str) -> dict | None:
+    if _offline():
+        return _offline_feasibility_reports.get(run_id)
+    res = await _run(_client().table("feasibility_reports").select("*").eq("run_id", run_id).execute)
+    return (res.data or [None])[0]
+
+
+# --------------------------------------------------------------------------
+# rd_runs / rd_events (LangGraph control layer)
+# --------------------------------------------------------------------------
+
+_offline_rd_runs: dict[str, dict] = {}
+_offline_rd_events: dict[str, list] = {}
+
+
+async def rd_run_create(run_id: str, repo_id: str, idea: str) -> None:
+    if _offline():
+        _offline_rd_runs[run_id] = {
+            "id": run_id,
+            "repo_id": repo_id,
+            "idea": idea,
+            "status": "running",
+            "result": None,
+            "created_at": _now_iso(),
+        }
+        return
+    expires = _expires_at(settings.rd_run_ttl_s)
+    payload: dict = {"id": run_id, "repo_id": repo_id, "idea": idea, "status": "running"}
+    if expires:
+        payload["expires_at"] = expires
+    await _run(_client().table("rd_runs").insert(payload).execute)
+
+
+async def rd_run_update(run_id: str, fields: dict) -> None:
+    if _offline():
+        row = _offline_rd_runs.get(run_id)
+        if row:
+            row.update(fields)
+        return
+    await _run(_client().table("rd_runs").update(fields).eq("id", run_id).execute)
+
+
+async def rd_run_get(run_id: str) -> dict | None:
+    if _offline():
+        return _offline_rd_runs.get(run_id)
+    res = await _run(_client().table("rd_runs").select("*").eq("id", run_id).execute)
+    return (res.data or [None])[0]
+
+
+async def rd_run_list(
+    limit: int = 20, offset: int = 0, repo_id: str | None = None, status: str | None = None
+) -> list[dict]:
+    if _offline():
+        rows = list(_offline_rd_runs.values())
+        rows.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return rows[offset : offset + limit]
+    q = _client().table("rd_runs").select("*").order("created_at", desc=True).limit(limit + offset)
+    if repo_id:
+        q = q.eq("repo_id", repo_id)
+    if status:
+        q = q.eq("status", status)
+    res = await _run(q.execute)
+    data = res.data
+    return data[offset : offset + limit] if offset else data[:limit]
+
+
+async def rd_event_add(run_id: str, event: dict) -> None:
+    if _offline():
+        _offline_rd_events.setdefault(run_id, []).append(event)
+        return
+    await _run(_client().table("rd_events").insert({"run_id": run_id, "type": event.get("type", ""), "data": event}).execute)
+
+
+async def rd_events_for(run_id: str, limit: int = 500) -> list[dict]:
+    if _offline():
+        return _offline_rd_events.get(run_id, [])[:limit]
+    res = await _run(
+        _client().table("rd_events").select("data").eq("run_id", run_id).order("id").limit(limit).execute
+    )
+    return [row.get("data") for row in (res.data or [])]

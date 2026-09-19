@@ -9,10 +9,14 @@ from openai import AsyncOpenAI
 from .api import router
 from .config import settings
 from .core import storage, vectorstore
+from .runs import checkpoint as run_checkpoint
+from .runs.graph import reset_graph
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    await run_checkpoint.init_checkpointer()
+    reset_graph()
     if not settings.offline:
         await storage.ensure_bucket()
     await vectorstore.ensure_collections()
@@ -27,6 +31,7 @@ async def lifespan(app: FastAPI):
     if app.state.redis is not None:
         await app.state.redis.aclose()
     await vectorstore.close_client()
+    await run_checkpoint.close_checkpointer()
 
 
 app = FastAPI(title="ProdRag", lifespan=lifespan)

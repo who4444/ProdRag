@@ -12,6 +12,8 @@ from .retry import retry_async
 
 
 def enabled() -> bool:
+    if settings.offline:
+        return False
     return bool((settings.rerank_service_url or "").strip())
 
 

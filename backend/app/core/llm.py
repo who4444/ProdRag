@@ -34,12 +34,32 @@ class Usage:
 
 _usage: ContextVar[Usage | None] = ContextVar("llm_usage", default=None)
 
+# Per-run ledgers for graph executions: nodes call activate_usage(run_id) so
+# every chat_json inside that node accumulates into the run's Usage object,
+# across interrupt/resume cycles and parallel fan-out.
+_runs: dict[str, Usage] = {}
+
 
 def start_usage() -> Usage:
     """Begin a usage ledger for the current task/context."""
     usage = Usage()
     _usage.set(usage)
     return usage
+
+
+def activate_usage(run_id: str) -> Usage:
+    """Bind the current context to a named run ledger (created on first use)."""
+    usage = _runs.setdefault(run_id, Usage())
+    _usage.set(usage)
+    return usage
+
+
+def usage_for(run_id: str) -> Usage:
+    return _runs.setdefault(run_id, Usage())
+
+
+def release_usage(run_id: str) -> None:
+    _runs.pop(run_id, None)
 
 
 def current_usage() -> Usage | None:

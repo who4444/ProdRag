@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 def enabled() -> bool:
+    if settings.offline:
+        return False
     return bool(
         (settings.tavily_api_key or "").strip()
         or (settings.serper_api_key or "").strip()

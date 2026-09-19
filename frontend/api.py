@@ -127,6 +127,72 @@ def code_generate_stream(base_url: str, token: str, artifact: dict, session_id: 
     return r
 
 
+def repo_index(base_url: str, token: str, path: str, repo_id: str | None = None, name: str | None = None) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    payload: dict = {"path": path}
+    if repo_id:
+        payload["repo_id"] = repo_id
+    if name:
+        payload["name"] = name
+    r = requests.post(f"{base_url}/repo/index", headers=headers, json=payload, timeout=600)
+    _check(r)
+    return r.json()
+
+
+def repo_list(base_url: str, token: str) -> list[dict]:
+    headers = {"Authorization": f"Bearer {token}"}
+    r = requests.get(f"{base_url}/repo/list", headers=headers, timeout=30)
+    _check(r)
+    return r.json()
+
+
+def repo_search(base_url: str, token: str, query: str, repo_id: str | None = None, k: int = 6) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    payload: dict = {"query": query, "k": k}
+    if repo_id:
+        payload["repo_id"] = repo_id
+    r = requests.post(f"{base_url}/repo/search", headers=headers, json=payload, timeout=120)
+    _check(r)
+    return r.json()
+
+
+def feasibility_understand(
+    base_url: str, token: str, idea: str, answers: list[str] | None = None, session_id: str | None = None
+) -> dict:
+    headers = {"Authorization": f"Bearer {token}"}
+    payload: dict = {"idea": idea}
+    if answers:
+        payload["answers"] = answers
+    if session_id:
+        payload["session_id"] = session_id
+    r = requests.post(f"{base_url}/feasibility/understand", headers=headers, json=payload, timeout=60)
+    _check(r)
+    return r.json()
+
+
+def feasibility_stream(
+    base_url: str,
+    token: str,
+    idea: str,
+    repo_id: str,
+    understanding: dict | None = None,
+    answers: list[str] | None = None,
+    k: int = 6,
+):
+    headers = {"Authorization": f"Bearer {token}"}
+    payload: dict = {"idea": idea, "repo_id": repo_id, "k": k}
+    if understanding:
+        payload["understanding"] = understanding
+    if answers:
+        payload["answers"] = answers
+    r = requests.post(
+        f"{base_url}/feasibility/analyze", headers=headers, json=payload, stream=True, timeout=600
+    )
+    if r.status_code >= 400:
+        raise APIError(f"HTTP {r.status_code}: {r.text[:500]}")
+    return r
+
+
 def list_documents(base_url: str, token: str, status: str | None = None) -> list[dict]:
     headers = {"Authorization": f"Bearer {token}"}
     params = {}

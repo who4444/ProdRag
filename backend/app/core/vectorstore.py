@@ -126,13 +126,20 @@ async def upsert_text(items: list[tuple[dict, list[float]]]) -> int:
     return len(points)
 
 
+def _code_sparse_text(p: dict) -> str:
+    """Path/symbol tokens are part of the lexical index: users search 'retrieval.py',
+    and the file name often does not appear in the chunk body."""
+    header = f"{p.get('path', '')} {p.get('symbol', '')}".strip()
+    return f"{header} {p.get('text', '')}".strip()
+
+
 async def upsert_code(items: list[tuple[dict, list[float]]]) -> int:
     """Upsert code chunks into the code collection (dense + BM25 hybrid)."""
     client = await get_client()
     points = [
         PointStruct(
             id=_point_id("code", p),
-            vector={"": v, "bm25": SparseVector(**to_sparse(p["text"]))},
+            vector={"": v, "bm25": SparseVector(**to_sparse(_code_sparse_text(p)))},
             payload=p,
         )
         for p, v in items

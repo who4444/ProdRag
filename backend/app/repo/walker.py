@@ -48,6 +48,9 @@ TEXT_EXTENSIONS = {
     ".sql",
     ".sh",
     ".json",
+    ".jsonl",
+    ".csv",
+    ".tsv",
     ".txt",
 }
 
@@ -64,6 +67,9 @@ _LANGUAGE_BY_EXT = {
     ".sql": "sql",
     ".sh": "shell",
     ".json": "json",
+    ".jsonl": "jsonl",
+    ".csv": "csv",
+    ".tsv": "tsv",
     ".txt": "text",
 }
 

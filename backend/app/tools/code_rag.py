@@ -37,7 +37,10 @@ def _lexical_rerank(query: str, hits: list[dict]) -> list[dict]:
         # BM25 tf saturation (k1=1.2) over sqrt-length: repeated prose terms stop
         # mattering after a few occurrences, short focused code chunks win.
         density = sum(counts[t] / (counts[t] + 1.2) for t in covered) / math.sqrt(max(sum(counts.values()), 1))
-        h["score"] = round(coverage + 0.3 * density, 4)
+        # File/symbol names are strong signals ("retrieval" -> rag/retrieval.py).
+        path_terms = set(tokens(f"{h.get('path', '')} {h.get('symbol', '')}"))
+        path_coverage = len(q_terms & path_terms) / len(q_terms)
+        h["score"] = round(coverage + 0.3 * density + 0.4 * path_coverage, 4)
     hits.sort(key=lambda h: h["score"], reverse=True)
     return hits
 
