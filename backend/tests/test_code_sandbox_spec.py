@@ -56,6 +56,35 @@ async def test_sandbox_fails_on_broken_demo():
 
 
 @pytest.mark.asyncio
+async def test_sandbox_fails_on_pytest_errors_even_when_demo_passes():
+    """Setup/collection errors must fail the run even if demo.py exits 0."""
+    from app.code.sandbox import run_sandbox
+
+    files = [
+        {"path": "demo.py", "content": "print('hello demo')\n"},
+        {"path": "requirements.txt", "content": ""},
+        {"path": "test_demo.py", "content": "import json\n\n\ndef test_bad():\n    json.loads('not json')\n"},
+    ]
+    result = await run_sandbox(files, timeout=15)
+    dump = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+    assert dump["passed"] is False
+
+
+@pytest.mark.asyncio
+async def test_sandbox_passes_without_test_file():
+    """No tests is allowed when the demo runs (minimal-demo case)."""
+    from app.code.sandbox import run_sandbox
+
+    files = [
+        {"path": "demo.py", "content": "print('hello demo')\n"},
+        {"path": "requirements.txt", "content": ""},
+    ]
+    result = await run_sandbox(files, timeout=15)
+    dump = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+    assert dump["passed"] is True
+
+
+@pytest.mark.asyncio
 async def test_sandbox_timeout():
     """Long-running demo must be killed after timeout, not hang. — design §5"""
     from app.code.sandbox import run_sandbox

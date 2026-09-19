@@ -26,7 +26,7 @@ SYSTEM = (
     "Rules:\n"
     "- interpretation = what the user is actually asking to build, in one or two sentences.\n"
     "- assumptions = things you are assuming but the user did not state.\n"
-    "- hypotheses = falsifiable claims the PoC should test.\n"
+    "- hypotheses = 1-4 falsifiable claims the PoC should test (required, never empty).\n"
     "- ambiguities = what is still unclear.\n"
     "- If scope/target/success-criterion is unclear, ask 1-3 specific questions and set ready=false.\n"
     "- If answers were provided, fold them in and set ready=true with empty ambiguities "

@@ -71,6 +71,13 @@ def validate_ref(root: Path, ref: EvidenceRef) -> EvidenceRef:
     return ref
 
 
+CODE_EXTENSIONS = (".py", ".pyi")
+
+
+def _is_code_ref(ref: EvidenceRef) -> bool:
+    return str(ref.path).lower().endswith(CODE_EXTENSIONS)
+
+
 def apply_citation_gate(root: Path, claims: list[FeasibilityClaim]) -> list[FeasibilityClaim]:
     for claim in claims:
         for ref in claim.evidence:
@@ -83,6 +90,14 @@ def apply_citation_gate(root: Path, claims: list[FeasibilityClaim]) -> list[Feas
             claim.status = "supported"
         else:
             claim.status = "unsupported"
+        # Technical/integration plausibility must rest on code, not prose: docs
+        # that merely describe the system are not implementation evidence.
+        if (
+            claim.status == "supported"
+            and claim.dimension in ("technical", "integration")
+            and not any(r.valid and _is_code_ref(r) for r in claim.evidence)
+        ):
+            claim.status = "assumption"
         if not claim.id:
             digest = hashlib.md5(claim.statement.encode()).hexdigest()[:8]
             claim.id = f"{claim.dimension}-{digest}"

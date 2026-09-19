@@ -17,9 +17,15 @@ SYSTEM = (
     "and the sandbox logs (pytest + demo output), output JSON:\n"
     '{"hypotheses": [{"hypothesis": str, "supported": bool, "evidence": str}], '
     '"caveats": [str], "verdict": "pass|pass_with_caveats|fail"}\n'
-    "Rules: supported=false when the logs do not show evidence for the hypothesis. "
-    "evidence must quote the log, not paraphrase. Be concise. Return JSON only."
+    "Rules: copy each input hypothesis verbatim into the hypothesis field, in the same "
+    "order (no prefixes/rewording). supported=false when the logs do not show evidence "
+    "for the hypothesis. evidence must quote the log, not paraphrase. Be concise. "
+    "Return JSON only."
 )
+
+
+def _norm(text: str) -> str:
+    return " ".join(str(text).lower().split())
 
 
 def _hypotheses_from(understanding: dict | None) -> list[str]:
@@ -68,9 +74,14 @@ async def evaluate_poc(
         )
         try:
             data = await chat_json(client, SYSTEM, user)
-            by_text = {str(h.get("hypothesis", "")).strip(): h for h in (data.get("hypotheses") or [])}
-            for h in hypotheses:
-                item = by_text.get(h) or {}
+            returned = list(data.get("hypotheses") or [])
+            by_text = {_norm(h.get("hypothesis", "")): h for h in returned}
+            for index, h in enumerate(hypotheses):
+                item = by_text.get(_norm(h))
+                if item is None and len(returned) == len(hypotheses):
+                    # prompt requires verbatim + same order; tolerate small rewordings
+                    item = returned[index]
+                item = item or {}
                 results.append(
                     HypothesisResult(
                         hypothesis=h,

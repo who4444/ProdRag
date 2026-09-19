@@ -66,7 +66,8 @@ def test_bridge_carries_evidence_and_hypotheses_into_artifact():
     assert artifact.validation.risks == ["breaks API", "no dataset"]
     assert "pkg/core.py:1-2" in dims["technical"].findings
     assert "PoC hypothesis: cache hit rate improves" in artifact.demo_spec.acceptance_criteria
-    assert "demo.py exits 0" in artifact.demo_spec.acceptance_criteria
+    assert any(c.startswith("demo.py exits 0") for c in artifact.demo_spec.acceptance_criteria)
+    assert any("JSON" in c for c in artifact.demo_spec.acceptance_criteria)  # explicit I/O contract
     assert "pkg/core.py::Engine" in artifact.demo_spec.pseudocode
     assert artifact.requirements.goal == "add caching"
 
@@ -126,6 +127,26 @@ async def test_evaluate_poc_pass_with_supported_hypothesis():
     assert report.verdict == "pass"
     assert report.llm_calls == 4
     assert report.runtime_ms == 42
+
+
+@pytest.mark.asyncio
+async def test_evaluate_poc_maps_reworded_hypotheses_by_position():
+    """The judge often prefixes/reworks items; results must still map to inputs."""
+    from app.runs.evaluate import evaluate_poc
+
+    client = _FakeClient(
+        {
+            "hypotheses": [
+                {"hypothesis": "H1: cache hit rate improves", "supported": True, "evidence": "1 passed"},
+            ],
+            "caveats": [],
+            "verdict": "pass",
+        }
+    )
+    report = await evaluate_poc(client, UNDERSTANDING, SANDBOX_OK, {"calls": 1}, wall_ms=10)
+    assert report.hypotheses[0].hypothesis == "cache hit rate improves"  # original text preserved
+    assert report.hypotheses[0].supported is True
+    assert report.hypotheses[0].evidence == "1 passed"
 
 
 @pytest.mark.asyncio

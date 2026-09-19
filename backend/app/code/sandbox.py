@@ -177,7 +177,7 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
         demo_code = 1
 
     runtime_ms = int((time.time() - start) * 1000)
-    return demo_code, pytest_log, demo_log, runtime_ms
+    return demo_code, _pytest_code, pytest_log, demo_log, runtime_ms
 
 
 async def run_sandbox(files: list[dict | BaseModel], timeout: int = 15) -> SandboxResult:
@@ -198,28 +198,22 @@ async def run_sandbox(files: list[dict | BaseModel], timeout: int = 15) -> Sandb
 
             # Run in thread to avoid blocking event loop (like db.py to_thread)
             loop = asyncio.get_running_loop()
-            demo_code, pytest_log, demo_log, runtime_ms = await loop.run_in_executor(None, lambda: _run_sync(tmp, timeout))
+            demo_code, pytest_code, pytest_log, demo_log, runtime_ms = await loop.run_in_executor(
+                None, lambda: _run_sync(tmp, timeout)
+            )
 
-            passed = (demo_code == 0)
-            # If pytest log contains failure, mark failed
-            if "failed" in pytest_log.lower() or "error" in pytest_log.lower():
-                # But if demo succeeded and pytest not crucial, keep demo-based passed
-                if "passed" in pytest_log.lower() and demo_code == 0:
-                    passed = True
-                elif "1 failed" in pytest_log.lower():
-                    passed = False
-
-            # Timeout detection
+            # Exit codes decide: pytest errors/collection failures must fail the run
+            # (127 = no test file / pytest unavailable -> demo alone is the check).
+            passed = demo_code == 0 and pytest_code in (0, 127)
             if "timeout" in pytest_log.lower() or "timeout" in demo_log.lower():
                 passed = False
 
-            # Overall passed is demo success and pytest success
-            # For v1, require both unless pytest not present
-            if "pytest not found" in pytest_log and demo_code == 0:
-                passed = True
-            elif demo_code != 0:
-                passed = False
-
-            return SandboxResult(passed=passed, pytest_log=pytest_log[:4000], demo_log=demo_log[:4000], returncode=demo_code, runtime_ms=runtime_ms)
+            return SandboxResult(
+                passed=passed,
+                pytest_log=pytest_log[:4000],
+                demo_log=demo_log[:4000],
+                returncode=demo_code,
+                runtime_ms=runtime_ms,
+            )
     except Exception as e:
         return SandboxResult(passed=False, pytest_log=str(e)[:4000], demo_log="", returncode=1, runtime_ms=0)

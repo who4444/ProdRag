@@ -20,6 +20,8 @@ SYSTEM = (
     "- file_tasks must include demo.py, requirements.txt, test_demo.py (base 3), "
     "others allowed (e.g., model.py, utils.py) if core_algorithm mentions model/dataset/utils — 3-5 files total.\n"
     "- test_intents must derive from acceptance_criteria (e.g. demo.py exits 0, toy metric).\n"
+    "- I/O contract: demo.py prints exactly one JSON object to stdout with the measured "
+    "outcome; test_demo.py parses that JSON (subprocess + json.loads) rather than prose.\n"
     "- dependencies are python packages (e.g. numpy).\n"
     "- risks mirror validation.risks if any.\n"
     "Return JSON only."

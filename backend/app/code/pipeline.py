@@ -19,8 +19,12 @@ from .tester import generate_tests
 logger = logging.getLogger(__name__)
 
 
-async def code_generate(client, artifact, session_id: str | None = None):
-    """Yield NDJSON events for code generation from a ResearchArtifact dict/model."""
+async def code_generate(client, artifact, session_id: str | None = None, feedback: str | None = None):
+    """Yield NDJSON events for code generation from a ResearchArtifact dict/model.
+
+    `feedback` carries a previous sandbox failure into the file subagents and the
+    tester so a retry fixes the real mismatch instead of repeating it.
+    """
     # Normalize artifact to dict for later use
     if hasattr(artifact, "model_dump"):
         artifact_dict = artifact.model_dump()
@@ -51,6 +55,10 @@ async def code_generate(client, artifact, session_id: str | None = None):
 
     # Orchestrator (already part of analyzer's file_tasks, but emit separately for spec)
     tasks = build_code_plan(coding_spec)
+    if feedback:
+        for task in tasks:
+            prefix = f"{task.context_slice}\n\n" if task.context_slice else ""
+            task.context_slice = (prefix + "Previous sandbox failure (fix this):\n" + feedback)[:4000]
     # Parallel subagents with semaphore (3 concurrent)
     sem = asyncio.Semaphore(3)
 
@@ -85,9 +93,9 @@ async def code_generate(client, artifact, session_id: str | None = None):
     try:
         # Tester signature handles both orders
         try:
-            test_file = await generate_tests(client, coding_spec, artifact_obj)
+            test_file = await generate_tests(client, coding_spec, artifact_obj, feedback=feedback)
         except TypeError:
-            test_file = await generate_tests(client, artifact_obj, coding_spec)
+            test_file = await generate_tests(client, artifact_obj, coding_spec, feedback=feedback)
     except Exception:
         logger.exception("tester failed")
         test_file = GeneratedFile(path="test_demo.py", content="def test_demo():\n    assert True\n")

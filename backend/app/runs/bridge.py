@@ -58,7 +58,10 @@ def report_to_artifact(report: dict, idea: str) -> ResearchArtifact:
         f"- {ep.get('path')}::{ep.get('symbol', '')} {ep.get('reason', '')}" for ep in extension_points[:5]
     )
     hypotheses = understanding.get("hypotheses") or []
-    criteria = [f"PoC hypothesis: {h}" for h in hypotheses[:4]] + ["demo.py exits 0"]
+    criteria = [f"PoC hypothesis: {h}" for h in hypotheses[:4]] + [
+        "demo.py exits 0 and prints a single JSON object to stdout with the measured outcome",
+        "test_demo.py parses that JSON instead of scraping prose",
+    ]
 
     demo_spec = DemoSpec(
         entrypoint="demo.py",

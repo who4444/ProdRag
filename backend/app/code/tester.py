@@ -15,7 +15,11 @@ SYSTEM = (
     "You are a test generator for a runnable demo. Given CodingSpec.test_intents "
     "and ResearchArtifact.demo_spec.acceptance_criteria, write a pytest file "
     "test_demo.py that verifies the demo. Use toy data, assert demo.py exits 0, "
-    "check output shape, and check toy metric. Do not import demo internals beyond "
+    "check the toy metric. I/O contract: demo.py prints exactly one JSON object to "
+    "stdout — parse it with subprocess + json.loads; never assume command-line args "
+    "or a second script. Assert that the spec's required keys are a SUBSET of the "
+    "payload (required <= set(payload)); never assert exact key-set equality unless "
+    "acceptance_criteria fixes the full schema. Do not import demo internals beyond "
     "subprocess. Return only the python file content, no markdown."
 )
 
@@ -60,7 +64,7 @@ def _fallback_content(acceptance: list[str] | None = None) -> str:
     return base
 
 
-async def generate_tests(client, a, b=None) -> GeneratedFile:
+async def generate_tests(client, a, b=None, feedback: str | None = None) -> GeneratedFile:
     # Handle both signatures: generate_tests(client, spec, artifact) or generate_tests(client, artifact, spec)
     # Also handle single artifact+spec packed as one arg (not used in tests but be robust)
     if b is None:
@@ -104,6 +108,13 @@ async def generate_tests(client, a, b=None) -> GeneratedFile:
         f"acceptance_criteria: {acceptance}\n"
         f"Write test_demo.py content now."
     )
+    if feedback:
+        prompt += (
+            "\n\nPrevious attempt failed the sandbox. Align the tests with what the demo "
+            "actually prints (and with the JSON contract): if the demo emits extra keys, "
+            "assert only that the required keys are present (subset) and check the values "
+            "you care about — do not require exact key-set equality.\n" + feedback[:2500]
+        )
 
     try:
         resp = await client.chat.completions.create(

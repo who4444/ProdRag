@@ -48,6 +48,34 @@ def test_gate_sets_status_from_evidence(tmp_path):
     assert all(c.id for c in claims)  # deterministic ids assigned
 
 
+def test_gate_requires_code_evidence_for_technical_and_integration(tmp_path):
+    """Docs describe the system; they are not implementation evidence."""
+    root = _repo(tmp_path)
+    (root / "PROJECT.md").write_text("mod.py implements the feature\n", encoding="utf-8")
+
+    doc_technical = FeasibilityClaim(
+        dimension="technical",
+        statement="PROJECT.md says it exists",
+        evidence=[EvidenceRef(path="PROJECT.md", start_line=1)],
+    )
+    doc_data = FeasibilityClaim(
+        dimension="data",
+        statement="data described in docs",
+        evidence=[EvidenceRef(path="PROJECT.md", start_line=1)],
+    )
+    code_plus_doc = FeasibilityClaim(
+        dimension="technical",
+        statement="implemented in code",
+        evidence=[EvidenceRef(path="pkg/mod.py", start_line=1), EvidenceRef(path="PROJECT.md", start_line=1)],
+    )
+
+    apply_citation_gate(root, [doc_technical, doc_data, code_plus_doc])
+
+    assert doc_technical.status == "assumption"  # downgraded: docs only
+    assert doc_data.status == "supported"  # data may be documented
+    assert code_plus_doc.status == "supported"  # has a code ref
+
+
 def test_gate_treats_provisional_claims_as_unsupported(tmp_path):
     root = _repo(tmp_path)
     provisional = FeasibilityClaim(

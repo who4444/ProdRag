@@ -33,12 +33,20 @@ async def run_file_task(client, task) -> GeneratedFile:
         except Exception:
             pass
 
+    demo_contract = ""
+    if task_obj.path == "demo.py":
+        demo_contract = (
+            "Print exactly one JSON object to stdout as the final output, using the exact "
+            "metric names from the context (no duplicate aliases such as both "
+            "embed_calls_total and embedding_calls). "
+        )
     prompt = (
         f"File to generate: {task_obj.path}\n"
         f"Goal: {task_obj.goal}\n"
         f"Context slice: {task_obj.context_slice}{web_ctx}\n\n"
         f"Task: write ONLY the content for {task_obj.path}. "
         f"For demo.py, write runnable python that demonstrates the core idea on toy data. "
+        f"{demo_contract}"
         f"For requirements.txt, list python dependencies one per line. "
         f"For test_demo.py, write pytest. "
         f"Return only the file content, no markdown fences, no extra explanation."

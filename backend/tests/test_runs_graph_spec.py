@@ -267,10 +267,11 @@ async def test_graph_poc_debug_retry_once(graph_env, monkeypatch):
     from app.runs.schemas import RunRequest
 
     repo_id = (await _index(graph_env, monkeypatch)).repo_id
-    attempts = {"n": 0}
+    attempts = {"n": 0, "feedback": []}
 
-    async def _fake_code_generate(client, artifact, session_id=None):
+    async def _fake_code_generate(client, artifact, session_id=None, feedback=None):
         attempts["n"] += 1
+        attempts["feedback"].append(feedback)
         passed = attempts["n"] > 1
         yield {"type": "code", "event": "file_result", "file": {"path": "demo.py", "content": "print(1)"}}
         yield {
@@ -289,6 +290,9 @@ async def test_graph_poc_debug_retry_once(graph_env, monkeypatch):
     poc_results = [e for e in events if e.get("type") == "poc" and e.get("event") == "result"]
     assert len(poc_results) == 2
     assert [r["retry"] for r in poc_results] == [False, True]
+    # the retry must carry the first failure into the code pipeline
+    assert attempts["feedback"][0] is None
+    assert attempts["feedback"][1] and "1 failed" in attempts["feedback"][1]
     final = next(e for e in events if e.get("type") == "run" and e.get("event") == "result")
     assert final["status"] == "done"
     assert final["data"]["poc"]["sandbox"]["passed"] is True

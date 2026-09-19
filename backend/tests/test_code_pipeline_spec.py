@@ -96,6 +96,55 @@ async def test_code_pipeline_event_sequence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_code_pipeline_threads_sandbox_feedback(monkeypatch):
+    """A retry must carry the previous failure into file subagents and the tester."""
+    from unittest.mock import AsyncMock
+
+    from app.code.pipeline import code_generate
+
+    monkeypatch.setattr("app.core.db.code_run_create", AsyncMock(), raising=False)
+    monkeypatch.setattr("app.core.db.code_run_update", AsyncMock(), raising=False)
+    monkeypatch.setattr("app.core.db.code_artifact_upsert", AsyncMock(), raising=False)
+    monkeypatch.setattr(
+        "app.code.sandbox.run_sandbox",
+        AsyncMock(return_value={"passed": True, "pytest_log": "ok", "demo_log": "ok", "returncode": 0, "runtime_ms": 5}),
+        raising=False,
+    )
+
+    seen: list[str] = []
+
+    class _Completions:
+        async def create(self, **kwargs):
+            text = " ".join(str(m.get("content", "")) for m in kwargs.get("messages", []))
+            seen.append(text)
+            if kwargs.get("response_format") == {"type": "json_object"}:
+                payload = {
+                    "file_tasks": [
+                        {"path": "demo.py", "goal": "demo", "context_slice": "algo"},
+                        {"path": "requirements.txt", "goal": "deps", "context_slice": "numpy"},
+                        {"path": "test_demo.py", "goal": "tests", "context_slice": "demo exits 0"},
+                    ],
+                    "test_intents": ["demo exits 0"],
+                    "dependencies": ["numpy"],
+                    "risks": [],
+                }
+                return _FakeResp(json.dumps(payload))
+            if "test generator" in text:
+                return _FakeResp("def test_demo():\n    assert True")
+            return _FakeResp("print('{}')\n")
+
+    client = type("C", (), {"chat": type("C2", (), {"completions": _Completions()})()})()
+
+    async for _ in code_generate(client, _sample_artifact(), feedback="SENTINEL_FAILURE_LOG line 42"):
+        pass
+
+    file_prompts = [t for t in seen if "File to generate:" in t]
+    tester_prompts = [t for t in seen if "test generator" in t]
+    assert file_prompts and all("SENTINEL_FAILURE_LOG" in t for t in file_prompts)
+    assert tester_prompts and all("SENTINEL_FAILURE_LOG" in t for t in tester_prompts)
+
+
+@pytest.mark.asyncio
 async def test_code_pipeline_artifact_contains_code_artifact(monkeypatch):
     """Final artifact must contain CodeArtifact with files, test_file, sandbox. — design §3"""
     from unittest.mock import AsyncMock

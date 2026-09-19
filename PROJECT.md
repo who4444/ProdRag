@@ -460,7 +460,7 @@ Legacy `/research` events (`memory/session`, `agent/tool_call`, etc.) remain unc
 * **Orchestrator** (`code/orchestrator.py`): pure function `build_code_plan(CodingSpec|ResearchArtifact) -> list[FileTask{path, goal, context_slice}]` — fixed v1 set `demo.py, requirements.txt, test_demo.py`, deterministic sort, handles both `CodingSpec` and raw `ResearchArtifact` for flexibility.
 * **Subagent** (`code/subagent.py`): `run_file_task(client, FileTask) -> GeneratedFile{path, content}` — one LLM call per file, prompt `path + goal + context_slice`, strips markdown fences, fallback per file (`print('hello demo')`, `numpy\n`, `def test_demo(): assert True`).
 * **Tester** (`code/tester.py`): `generate_tests(client, CodingSpec|dict, ResearchArtifact|dict) -> GeneratedFile{path="test_demo.py"}` — one LLM call **from `CodingSpec.test_intents + demo_spec.acceptance_criteria`**, not from generated code (avoids tautology). Accepts either arg order. Fallback `def test_demo(): subprocess.run([sys.executable, 'demo.py'])`.
-* **Sandbox** (`code/sandbox.py`): `run_sandbox(files: [GeneratedFile|dict], timeout=15) -> SandboxResult{passed, pytest_log, demo_log, returncode, runtime_ms}` — `tempfile.TemporaryDirectory` + `asyncio.to_thread(subprocess.run)` (pip 60s, pytest+demo 30s), never raises, timeout → `passed=false`. `ponytail: subprocess without cgroup/network ns, switch to docker+gvisor if untrusted`.
+* **Sandbox** (`code/sandbox.py`): `run_sandbox(files: [GeneratedFile|dict], timeout=15) -> SandboxResult{passed, pytest_log, demo_log, returncode, runtime_ms}` — `tempfile.TemporaryDirectory` + `asyncio.to_thread(subprocess.run)` (pip 60s, pytest+demo 30s), never raises, timeout → `passed=false`. `passed` is decided by exit codes: demo exit 0 AND pytest exit 0 (or 127 = no test file/pytest unavailable) — pytest collection/setup errors fail the run even when demo.py exits 0. `ponytail: subprocess without cgroup/network ns, switch to docker+gvisor if untrusted`.
 * **Pipeline** (`code/pipeline.py`): `code_generate(client, artifact, session_id?)` — `analyze_artifact` → `build_code_plan` → `run_file_task` x3 (sequential) → `generate_tests` → `run_sandbox` → `CodeArtifact{artifact_run_id, coding_spec, files, test_file, sandbox, created_at}`. Streams events above, best-effort `code_runs`/`code_artifacts` persist (swallows DB errors like R&D).
 * **Schemas** (`code/schemas.py`): `FileTask`, `CodingSpec`, `GeneratedFile`, `SandboxResult`, `CodeArtifact`, `CodeAnalyzeRequest/Response`, `CodeGenerateRequest`.
 
@@ -500,6 +500,9 @@ POST /feasibility/analyze {idea, repo_id, understanding?}
 
 * **Verdict rules are deterministic** (`judge.apply_evidence_gate`): the LLM cannot mark a
   dimension plausible without a valid citation. This is the core invariant of the phase.
+* **Code evidence for code claims** (`citation.apply_citation_gate`): a `technical` or
+  `integration` claim whose only valid refs are prose (`.md`/`.rst`/`.txt`) is downgraded to
+  `assumption` — docs describe the system, they are not implementation evidence.
 * **Failure behavior:** LLM/search failures produce `provisional=True` claims (status
   `unsupported`), so the report is still emitted with blockers + fallback alternatives.
 * **Events (NDJSON):** `feasibility/start`, `understand|clarify`, `map`, `claim` xN, `report`.

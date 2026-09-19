@@ -287,21 +287,37 @@ async def _run_poc(state: RunState, config, retry: bool) -> dict:
     run_id = state["run_id"]
     usage = llm.activate_usage(run_id)
     artifact = report_to_artifact(state.get("report") or {}, state["idea"])
+    feedback: str | None = None
     if retry:
-        # Second attempt carries the first failure in the spec criteria.
+        # Feed the actual failure AND the previous files back into the subagents so the
+        # retry fixes the bug instead of regenerating from scratch.
         sandbox = state.get("sandbox") or {}
-        artifact.demo_spec.acceptance_criteria.append(f"Previous attempt failed: {str(sandbox.get('pytest_log', ''))[:300]}")
+        previous = (state.get("poc") or {}).get("file_contents") or []
+        prev_block = "\n\n".join(
+            f"--- {f.get('path')} ---\n{(f.get('content') or '')[:1500]}" for f in previous[:5]
+        )
+        feedback = (
+            f"Attempt {int(state.get('debug_attempts', 0)) + 1} failed the sandbox.\n"
+            f"pytest_log:\n{str(sandbox.get('pytest_log', ''))[:1200]}\n\n"
+            f"demo_log:\n{str(sandbox.get('demo_log', ''))[:1200]}\n\n"
+            f"Previous files (fix these; do not rewrite unrelated parts):\n{prev_block[:4000]}"
+        )
     _write({"type": "poc", "event": "start", "run_id": run_id, "retry": retry})
     artifact_data: dict | None = None
     from .instrument import UsageTrackingClient
 
-    async for evt in code_generate(UsageTrackingClient(_client(config)), artifact):
+    async for evt in code_generate(UsageTrackingClient(_client(config)), artifact, feedback=feedback):
         if evt.get("type") == "code" and evt.get("event") == "artifact":
             artifact_data = evt.get("data") or {}
     data = artifact_data or {}
     sandbox = data.get("sandbox") or {}
+    files = data.get("files", [])
     poc = {
-        "files": [f.get("path") for f in data.get("files", [])],
+        "files": [f.get("path") for f in files],
+        # kept (truncated) so a retry can fix the previous attempt instead of rewriting
+        "file_contents": [
+            {"path": f.get("path"), "content": (f.get("content") or "")[:2000]} for f in files
+        ],
         "sandbox": sandbox,
         "coding_spec": data.get("coding_spec"),
     }
