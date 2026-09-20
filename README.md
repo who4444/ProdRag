@@ -40,7 +40,7 @@ Turns research papers and ideas into **runnable demo artifacts** — `demo.py + 
 * **Code Subagents** (`backend/app/code/subagent.py`): one LLM call per `FileTask` → `GeneratedFile{path, content}`.
 * **Repo RAG** (`backend/app/repo/` + `backend/app/tools/code_rag.py`): index a local repo (AST-aware chunks → Qdrant `code_chunks`, hybrid dense+BM25) and search it with `file:line` citations. Foundation for the feasibility phase.
 * **Feasibility** (`backend/app/feasibility/`): idea + indexed repo → cited feasibility report (technical / integration / data). Understand handshake exposes assumptions/ambiguities; 3 parallel subagents retrieve code and propose claims; a deterministic citation gate requires resolvable `file:line` evidence before any dimension can be called plausible.
-* **Run control** (`backend/app/runs/`, **LangGraph**): one durable graph per run — clarify/reframe interrupts, PoC generation conditioned on the cited report, hypothesis evaluation, bounded debug/reframe cycles, token/cost budget edges — checkpointed to Postgres (in-memory offline) so a paused run resumes after a restart.
+* **Run control** (`backend/app/runs/`, **LangGraph**): one durable graph per run — clarify/reframe interrupts, a lean **research plan** (chosen method + evaluation metrics), PoC generation conditioned on the cited report, hypothesis + **worthiness/performance** evaluation, an **integration proposal** (`changes.md`, never auto-applied), bounded debug/reframe cycles, and token/cost budget edges — checkpointed to Postgres (in-memory offline) so a paused run resumes after a restart.
 
 v1 demo is minimal: `demo.py` (toy data, `python`/`numpy`), `requirements.txt`, `test_demo.py` — sandbox-verified. Gradio/Docker are v2.
 
@@ -109,7 +109,7 @@ All except `GET /health` require `Authorization: Bearer $PRODRAG_API_TOKEN`.
 | `POST /feasibility/understand` | POST | `{"idea", answers?}` | `{"ready", "understanding?", "questions?"}` | handshake; assumptions/hypotheses/ambiguities |
 | `POST /feasibility/analyze` | POST | `{"idea", "repo_id", understanding?, answers?, k?}` | NDJSON `start`, `understand\|clarify`, `map`, `claim` xN, `report` | cited feasibility verdict |
 | `GET /feasibility/runs` / `GET /feasibility/runs/{id}` | GET | — | run + persisted report | |
-| `POST /runs` | POST | `{"idea","repo_id",k?,max_llm_calls?}` | NDJSON `run/start`, `feasibility/*`, `poc/*`, `eval/result`, `run/interrupt`, `run/result` | LangGraph run (durable) |
+| `POST /runs` | POST | `{"idea","repo_id",k?,max_llm_calls?}` | NDJSON `run/start`, `feasibility/*`, `research/plan`, `poc/*`, `eval/result`, `integration/plan\|skipped`, `run/interrupt`, `run/result` | LangGraph run (durable) |
 | `POST /runs/{id}/resume` | POST | `{"answers"}` or `{"accept","idea"}` | NDJSON continuation | clarify / reframe resume |
 | `GET /runs` / `GET /runs/{id}` | GET | — | run list / `{run, state, events}` | checkpoint state + evidence ledger |
 | `GET /files/{object_key}` | GET | — | bytes | proxies Supabase Storage |
@@ -204,7 +204,7 @@ Env: `PRODRAG_` prefix (`backend/app/config.py:6` reads `../.env` in Docker, `ba
 
 ```bash
 uv sync --extra dev --extra modal --extra frontend
-uv run pytest -q   # 217 tests (RD + code + search + repo RAG + feasibility + graph runs, pytest-asyncio)
+uv run pytest -q   # 239 tests (RD + code + search + repo RAG + feasibility + graph runs, pytest-asyncio)
 uv run ruff check backend/app backend/tests eval
 
 # zero-credential boot: in-memory Qdrant + deterministic hash embeddings

@@ -40,6 +40,18 @@ async def test_sandbox_passes_on_valid_demo():
 
 
 @pytest.mark.asyncio
+async def test_sandbox_reports_demo_runtime_and_memory():
+    """PoC performance metrics: demo-only runtime and approximate peak memory."""
+    from app.code.sandbox import run_sandbox
+
+    result = await run_sandbox(_files_simple(), timeout=15)
+    dump = result.model_dump() if hasattr(result, "model_dump") else dict(result)
+    assert dump["demo_runtime_ms"] >= 0
+    assert dump["runtime_ms"] >= dump["demo_runtime_ms"]
+    assert dump["memory_peak_kb"] is None or dump["memory_peak_kb"] > 0
+
+
+@pytest.mark.asyncio
 async def test_sandbox_fails_on_broken_demo():
     """Broken demo.py should yield passed=False, not raise. — design emit-with-risks"""
     from app.code.sandbox import run_sandbox

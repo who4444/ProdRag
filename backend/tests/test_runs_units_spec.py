@@ -72,6 +72,27 @@ def test_bridge_carries_evidence_and_hypotheses_into_artifact():
     assert artifact.requirements.goal == "add caching"
 
 
+def test_bridge_uses_poc_plan_when_present():
+    from app.runs.bridge import report_to_artifact
+
+    plan = {
+        "chosen_method": "wrap rag_search with an LRU cache",
+        "implementation_requirements": ["cache in tools/rag.py", "count embedding calls"],
+        "evaluation_metrics": [
+            {"name": "embedding_calls", "direction": "bounded", "threshold": "<=1 per unique question"}
+        ],
+        "system_context": "backend/app/tools/rag.py::rag_search",
+    }
+    artifact = report_to_artifact(_report(), "add caching", plan)
+
+    assert "wrap rag_search with an LRU cache" in artifact.demo_spec.core_algorithm
+    assert "cache in tools/rag.py" in artifact.demo_spec.pseudocode
+    assert "System context: backend/app/tools/rag.py::rag_search" in artifact.demo_spec.pseudocode
+    assert any("embedding_calls" in c and "bounded" in c for c in artifact.demo_spec.acceptance_criteria)
+    # evidence still rides along
+    assert "Evidence:" in artifact.demo_spec.core_algorithm or "Engine owns the state" in artifact.demo_spec.core_algorithm
+
+
 class _FakeClient:
     def __init__(self, payload):
         async def _create(**kwargs):
@@ -127,6 +148,64 @@ async def test_evaluate_poc_pass_with_supported_hypothesis():
     assert report.verdict == "pass"
     assert report.llm_calls == 4
     assert report.runtime_ms == 42
+
+
+def test_extract_demo_metrics_finds_last_json_object():
+    from app.runs.evaluate import _extract_demo_metrics
+
+    text = "preamble\n{\"old\": 1}\nmore text\n{\"cache_hits\": 2, \"embedding_calls\": 1}\n"
+    assert _extract_demo_metrics(text) == {"cache_hits": 2, "embedding_calls": 1}
+    assert _extract_demo_metrics("no json here") == {}
+    assert _extract_demo_metrics("") == {}
+
+
+@pytest.mark.asyncio
+async def test_evaluate_poc_surfaces_performance_and_worthiness():
+    from app.runs.evaluate import evaluate_poc
+
+    sandbox = {
+        **SANDBOX_OK,
+        "demo_runtime_ms": 12,
+        "memory_peak_kb": 40960,
+        "demo_log": '{"cache_hits": 2, "embedding_calls": 1}',
+    }
+    client = _FakeClient(
+        {
+            "hypotheses": [{"hypothesis": "cache hit rate improves", "supported": True, "evidence": "1 passed"}],
+            "caveats": [],
+            "verdict": "pass",
+            "performance_summary": "cache removes repeated embedding work",
+            "technical_debt": ["in-process cache only"],
+            "extensibility": ["needs eviction metrics for production"],
+            "worthiness": "marginal",
+        }
+    )
+    report = await evaluate_poc(client, UNDERSTANDING, sandbox, {"calls": 5, "cost_usd": 0.02}, wall_ms=100)
+
+    assert report.performance.demo_runtime_ms == 12
+    assert report.performance.memory_peak_kb == 40960
+    assert report.performance.metrics == {"cache_hits": 2, "embedding_calls": 1}
+    assert report.worthiness.worthiness == "marginal"
+    assert report.worthiness.technical_debt == ["in-process cache only"]
+    assert report.worthiness.cost_usd == 0.02
+
+
+@pytest.mark.asyncio
+async def test_evaluate_poc_worthiness_fallback_when_judge_silent():
+    from app.runs.evaluate import evaluate_poc
+
+    client = _FakeClient(
+        {
+            "hypotheses": [{"hypothesis": "cache hit rate improves", "supported": True, "evidence": "1 passed"}],
+            "caveats": [],
+            "verdict": "pass",
+        }
+    )
+    report = await evaluate_poc(client, UNDERSTANDING, SANDBOX_OK, {"calls": 1}, wall_ms=10)
+    assert report.worthiness.worthiness == "worth_it"
+
+    failed = await evaluate_poc(_FailingClient(), UNDERSTANDING, SANDBOX_FAIL, {}, wall_ms=10)
+    assert failed.worthiness.worthiness == "not_worth_it"
 
 
 @pytest.mark.asyncio

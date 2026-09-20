@@ -241,6 +241,28 @@ async def judge_node(state: RunState, config) -> dict:
     )
 
 
+async def research_node(state: RunState, config) -> dict:
+    """Lean research agent: feasibility evidence -> experiment plan (one LLM call)."""
+    run_id = state["run_id"]
+    usage = llm.activate_usage(run_id)
+    from ..feasibility.poc_plan import build_poc_plan
+
+    plan = await build_poc_plan(
+        _client(config),
+        state["idea"],
+        state.get("understanding") or {},
+        state.get("report") or {},
+        state.get("codebase_map") or {},
+        k=int(state.get("k", 3)),
+    )
+    data = plan.model_dump()
+    return _emit(
+        {"type": "research", "event": "plan", "run_id": run_id, "plan": data},
+        poc_plan=data,
+        usage=usage.snapshot(),
+    )
+
+
 async def reframe_node(state: RunState, config) -> dict:
     run_id = state["run_id"]
     payload = {
@@ -286,7 +308,7 @@ async def reframe_node(state: RunState, config) -> dict:
 async def _run_poc(state: RunState, config, retry: bool) -> dict:
     run_id = state["run_id"]
     usage = llm.activate_usage(run_id)
-    artifact = report_to_artifact(state.get("report") or {}, state["idea"])
+    artifact = report_to_artifact(state.get("report") or {}, state["idea"], state.get("poc_plan"))
     feedback: str | None = None
     if retry:
         # Feed the actual failure AND the previous files back into the subagents so the
@@ -362,6 +384,38 @@ async def evaluate_node(state: RunState, config) -> dict:
     )
 
 
+async def integration_node(state: RunState, config) -> dict:
+    """Turn a passing PoC into an apply proposal (changes.md). Never blocks the run."""
+    run_id = state["run_id"]
+    sandbox = state.get("sandbox") or {}
+    if not sandbox.get("passed"):
+        return _emit(
+            {"type": "integration", "event": "skipped", "run_id": run_id, "reason": "poc_failed"}
+        )
+    if not budget_ok(state):
+        return _emit(
+            {"type": "integration", "event": "skipped", "run_id": run_id, "reason": "budget"}
+        )
+
+    usage = llm.activate_usage(run_id)
+    from .integration import build_integration_plan
+
+    plan = await build_integration_plan(
+        _client(config),
+        state["idea"],
+        state.get("report") or {},
+        state.get("poc_plan") or {},
+        (state.get("poc") or {}).get("file_contents") or [],
+        sandbox,
+    )
+    data = plan.model_dump()
+    return _emit(
+        {"type": "integration", "event": "plan", "run_id": run_id, "data": data},
+        integration=data,
+        usage=usage.snapshot(),
+    )
+
+
 async def finalize_node(state: RunState, config) -> dict:
     run_id = state["run_id"]
     usage = llm.usage_for(run_id).snapshot()
@@ -381,8 +435,10 @@ async def finalize_node(state: RunState, config) -> dict:
         status=status,
         verdict=state.get("verdict"),
         report=state.get("report"),
+        poc_plan=state.get("poc_plan"),
         evaluation=state.get("evaluation"),
         poc=state.get("poc"),
+        integration=state.get("integration"),
         usage=usage,
         events=state.get("events", []),
         created_at=float(state.get("started_at", time.time())),

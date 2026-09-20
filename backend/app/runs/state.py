@@ -32,10 +32,12 @@ class RunState(TypedDict, total=False):
     reframes: int
 
     # poc + evaluation
+    poc_plan: dict | None
     poc: dict | None
     sandbox: dict | None
     debug_attempts: int
     evaluation: dict | None
+    integration: dict | None
 
     # control
     status: str  # running | clarifying | reframing | done | failed | budget_exceeded

@@ -92,11 +92,21 @@ def _extract_json(content: str) -> dict:
     content = (content or "").strip()
     if content.startswith("```"):
         content = content.strip("`")
-        content = content[content.find("{"):]
-    start, end = content.find("{"), content.rfind("}")
-    if start == -1 or end == -1:
+    start = content.find("{")
+    if start == -1:
         raise ValueError("LLM response contained no JSON object")
-    return json.loads(content[start : end + 1])
+    try:
+        # raw_decode takes the first complete object and tolerates trailing text
+        # (models sometimes append prose or a second object).
+        obj, _ = json.JSONDecoder().raw_decode(content[start:])
+    except json.JSONDecodeError:
+        end = content.rfind("}")
+        if end <= start:
+            raise ValueError("LLM response contained no JSON object") from None
+        obj = json.loads(content[start : end + 1])
+    if not isinstance(obj, dict):
+        raise TypeError("LLM response JSON was not an object")
+    return obj
 
 
 async def chat_json(client, system: str, user: str, model: str | None = None) -> dict:

@@ -27,7 +27,7 @@ idea -> [Analyzer] -> Requirements -> [Orchestrator -> Subagents x5] -> [Validat
 
 ---
 
-## 2. Current state (verified 2026-09-19 — v1: idea -> research -> code + repo RAG M1 + feasibility M2 + LangGraph runs M3, 217 tests)
+## 2. Current state (verified 2026-09-19 — v1: idea -> research -> code + repo RAG M1 + feasibility M2 + LangGraph runs M3 + research/worthiness/integration M3.5, 239 tests)
 
 The system is a working multimodal RAG pipeline extended with the R&D research pipeline and the **code generation pipeline** (artifact -> sandbox-tested demo). Everything below is running/verified except where noted.
 
@@ -50,7 +50,10 @@ The system is a working multimodal RAG pipeline extended with the R&D research p
 | Code Pipeline  | `backend/app/code/{analyzer,orchestrator,subagent,tester,sandbox,pipeline}.py` | artifact -> sandbox-tested demo (`demo.py`+`test_demo.py`) |
 | Repo indexing  | `backend/app/repo/{walker,chunker,indexer}.py` + `tools/code_rag.py` | local path -> AST chunks -> Qdrant `code_chunks` (repo RAG, M1) |
 | Feasibility    | `backend/app/feasibility/{understand,codebase_map,planner,subagent,judge,citation,pipeline}.py` | idea + repo -> cited technical/integration/data verdict (M2) |
-| Run control    | **LangGraph** `backend/app/runs/{state,graph,nodes,controller,checkpoint,evaluate,bridge}.py` | durable graph run: feasibility -> PoC -> eval, interrupts, budget edges (M3) |
+| Run control    | **LangGraph** `backend/app/runs/{state,graph,nodes,controller,checkpoint,evaluate,bridge,integration}.py` | durable graph run: feasibility -> research plan -> PoC -> eval -> integration plan; interrupts, budget edges (M3/M3.5) |
+| Research plan  | `backend/app/feasibility/poc_plan.py` | one LLM call: chosen method, requirements, experiment objective, evaluation metrics, system context (lean research agent) |
+| Worthiness     | `runs/evaluate.py` + `code/sandbox.py` | demo runtime + peak memory + demo JSON metrics + debt/extensibility/worthiness verdict |
+| Integration    | `backend/app/runs/integration.py` | passing PoC -> apply proposal (`changes.md`); never modifies the target repo |
 | Checkpoints    | `langgraph-checkpoint-postgres` (Supabase) / `InMemorySaver` offline | resumable runs across restarts |
 | Offline mode   | `PRODRAG_OFFLINE=1` (`core/vectorstore.py`, `core/embeddings/text.py`, `core/db.py`) | in-memory Qdrant + hash embeddings, zero credentials |
 | LLM ledger     | `backend/app/core/llm.py` | `chat_json()` structured output + per-run token/cost ledger (graph-aware) |
@@ -94,8 +97,9 @@ backend/app/           # FastAPI + worker package (organized by concern)
     chunker.py         # AST-aware chunks (function/class/method/block, line ranges, imports)
     indexer.py         # walk -> chunk -> embed (batched) -> code_chunks; idempotent re-index
     schemas.py         # RepoIndexRequest/SearchRequest/CodeChunk/RepoStats
-  feasibility/         # Feasibility phase (M2)
+  feasibility/         # Feasibility phase (M2) + PoC research plan (M3.5)
     understand.py      # idea -> interpretation/assumptions/hypotheses/ambiguities (handshake)
+    poc_plan.py        # cited feasibility -> experiment plan (one LLM call, KB-optional)
     codebase_map.py    # deterministic modules/edges/entrypoints/impacted + LLM enrichment
     planner.py         # fixed 3 dimensions: technical | integration | data
     subagent.py        # code_search -> cited claims (one per dimension, parallel)
@@ -107,8 +111,9 @@ backend/app/           # FastAPI + worker package (organized by concern)
     state.py           # RunState TypedDict threaded through nodes (events via add reducer)
     graph.py           # StateGraph + deterministic conditional edges (budget/retry/reframe)
     nodes.py           # graph nodes wrapping feasibility/, code/, evaluation; interrupt() at clarify/reframe
-    bridge.py          # FeasibilityReport -> ResearchArtifact (PoC conditioned on feasibility evidence)
-    evaluate.py        # deterministic runnability/spec checks + LLM hypothesis judge -> EvaluationReport
+    bridge.py          # FeasibilityReport + PocPlan -> ResearchArtifact (PoC conditioned on evidence)
+    evaluate.py        # runnability/spec/hypotheses + performance + worthiness -> EvaluationReport
+    integration.py     # passing PoC -> apply proposal (changes.md), never auto-applied
     instrument.py      # UsageTrackingClient: PoC LLM calls count toward the run ledger
     checkpoint.py      # AsyncPostgresSaver (prod) / InMemorySaver (offline) factory
     controller.py      # start_run/resume_run/get_run_state -> NDJSON stream
@@ -139,7 +144,7 @@ backend/app/           # FastAPI + worker package (organized by concern)
   agent.py             # research(): single tool-calling loop (now with optional web_search tool)
   memory.py            # conv (Supabase messages) + episodic (Qdrant + Supabase)
   worker.py            # arq WorkerSettings
-backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_feasibility_*_spec.py, test_runs_*_spec.py, test_llm_usage.py, test_offline_mode.py, test_search.py (217 tests)
+backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_feasibility_*_spec.py, test_runs_*_spec.py, test_llm_usage.py, test_offline_mode.py, test_search.py (239 tests)
 deploy/docker-compose.yml   # qdrant + redis + api + worker (no MinIO anymore)
 deploy/modal/          # embed_service.py, clip_service.py, search_proxy.py example, manage.sh, README.md
 frontend/              # Streamlit app.py + api.py + simple_test.html (Documents / Ask / Research / R&D + simple test UIs)
@@ -521,12 +526,13 @@ clarify ------------ -> understand                (answers from /runs/{id}/resum
 codebase_map ------- -> assess                    (3 dimensions, asyncio.gather)
 assess ------------- -> evidence_gate -> judge
 judge -------------- -> reframe(interrupt)        (verdict != plausible, reframes < 1)
-                    -> poc_generate               (otherwise)
+                    -> research                  (evidence-backed experiment plan)
 reframe ------------ -> understand                (accepted: new idea loops once)
                     -> finalize                   (declined)
+research ----------- -> poc_generate
 poc_generate ------- -> evaluate
                     -> poc_retry (<=1) -> evaluate
-evaluate ----------- -> finalize -> END
+evaluate ----------- -> integration_plan (skipped when PoC failed/budget) -> finalize -> END
 ```
 
 * **Durability:** `AsyncPostgresSaver(PRODRAG_DATABASE_URL)` in prod; `InMemorySaver`
@@ -545,6 +551,40 @@ evaluate ----------- -> finalize -> END
   LLM calls, cost.
 * **Never blocks:** nodes catch their own failures and mark claims/statuses; finalize always
   emits a `RunResult` (emit-with-risks).
+
+### 4.14 Research plan, worthiness, integration plan (M3.5)
+
+Closes the gaps against the original design: a research step inside the run, an
+evaluation that judges worth (not just pass/fail), and documentation of how to apply
+the PoC.
+
+* **Research plan** (`feasibility/poc_plan.py`): one `chat_json` call after a plausible
+  verdict. Input: supported claims, extension points, hypotheses, blockers, plus one
+  optional KB `rag_search` (skipped when empty/unavailable). Output `PocPlan{chosen_method,
+  implementation_requirements[], experiment_objective, evaluation_metrics[{name,direction,
+  threshold}], system_context}` with a deterministic fallback. Metric names must be simple
+  snake_case JSON keys.
+* **Contract propagation** (`runs/bridge.py`): the plan's chosen method + `Required JSON
+  keys (exact)` go into `demo_spec.core_algorithm`, so both the demo generator and the
+  tester see the same key names. `test_demo.py` parses demo JSON and asserts
+  `required <= set(payload)` (subset, never exact equality). Top-level metrics describe the
+  primary scenario; secondary scenarios live under `scenario_results`.
+* **Worthiness + performance** (`code/sandbox.py`, `runs/evaluate.py`): the sandbox now
+  times the demo subprocess separately (`demo_runtime_ms`) and records approximate peak
+  memory (`ru_maxrss`). `EvaluationReport` gains `performance{demo_runtime_ms,
+  sandbox_runtime_ms, memory_peak_kb, metrics}` (metrics parsed from the demo's JSON) and
+  `worthiness{worthiness, cost_usd, performance_summary, technical_debt[], extensibility[]}`.
+  The existing hypothesis judge emits the qualitative fields; a deterministic fallback
+  maps fail -> `not_worth_it`, caveats/debt -> `marginal`, clean pass -> `worth_it`.
+* **Integration plan** (`runs/integration.py`): after a passing PoC, one LLM call proposes
+  target files (from real extension points), steps, risks, and verification commands, and
+  renders `changes.md`. Skipped (`integration/skipped`, reason `poc_failed`/`budget`) when
+  the PoC failed. **Proposal only** — the target repo is never modified. Result rides in
+  `RunResult.integration`.
+* **Retry feedback:** a failed PoC retry carries pytest/demo logs *and* the previous file
+  contents into the file subagents and tester, so it fixes rather than rewrites.
+* **JSON robustness:** `core/llm.py:_extract_json` uses `raw_decode`, tolerating trailing
+  prose or a second JSON object.
 
 ## 5. Memory layer design
 
@@ -680,6 +720,7 @@ Not built yet (YAGNI until requested):
 - **M1 — repo indexing / code-aware RAG (DONE).** `backend/app/repo/` walker + AST chunker + indexer, Qdrant `code_chunks` (hybrid), `tools/code_rag.py`, `/repo/{index,search,list,get,delete}`, `repos` table. Evidence: ProdRag self-index (119 -> 138 files, 676 -> 814 chunks as the repo grew) in ~0.8s offline / ~180s cold Modal; `code_search("where is the sandbox run and subprocess")` -> `backend/app/code/sandbox.py` #2 with real embeddings, #1 offline (lexical rerank).
 - **M2 — grounded feasibility (DONE).** `backend/app/feasibility/` (understand handshake -> deterministic codebase map + LLM enrichment -> technical/integration/data subagents with citations -> deterministic evidence gate -> judge -> `FeasibilityReport`), `POST /feasibility/{understand,analyze,runs}`, `feasibility_runs/reports`, Streamlit Feasibility tab. Tests: `test_feasibility_*_spec.py`. 171 -> 201 tests.
 - **M3 — LangGraph control layer + PoC + eval (DONE).** Deps `langgraph` + `langgraph-checkpoint-postgres` (core). `backend/app/runs/`: deterministic StateGraph (understand → clarify interrupt → codebase_map → assess x3 → evidence gate → judge → reframe interrupt → PoC → debug ≤1 → evaluate → finalize), `AsyncPostgresSaver`/`InMemorySaver` checkpoints, per-run usage ledger with `UsageTrackingClient` for PoC calls, `rd_runs`/`rd_events` persistence, `POST /runs` + `POST /runs/{id}/resume` + `GET /runs/{id}`. Tests: `test_runs_*_spec.py` (15). 202 → 217 tests. Deviation from plan: the 3 dimensions run inside one `assess` node via `asyncio.gather` instead of LangGraph `Send` fan-out — simpler state (claims are replaceable on reframe) with the same concurrency.
+- **M3.5 — research plan + worthiness + integration docs (DONE).** Lean research agent (`poc_plan.py`) between judge and PoC; sandbox performance metrics (demo runtime, peak memory) and `worthiness{debt,extensibility,verdict}` in `EvaluationReport`; integration proposal (`changes.md`) for passing PoCs; retry feedback now carries previous file contents; JSON parser tolerates trailing text. Tests: `test_feasibility_poc_plan_spec.py`, `test_runs_integration_spec.py` (+12). 217 -> 239 tests.
 - **M4 — portfolio packaging (next).** README v3, ADRs, `eval/feasibility_eval.py` + frozen golden set (2 external repos, n=20, LLM-only baseline), results JSON/table, demo script, Streamlit run-graph controls.
 
 ---
@@ -697,7 +738,7 @@ docker compose -f deploy/docker-compose.yml up --build
 psql "$PRODRAG_DATABASE_URL" -f backend/app/core/schema.sql
 # or paste backend/app/core/schema.sql into Supabase SQL editor
 
-# tests (217, pytest-asyncio) + lint
+# tests (239, pytest-asyncio) + lint
 uv run pytest -q
 uv run ruff check backend/app backend/tests eval
 

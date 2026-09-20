@@ -26,7 +26,9 @@ class SandboxResult(BaseModel):
     pytest_log: str = ""
     demo_log: str = ""
     returncode: int = 0
-    runtime_ms: int = 0
+    runtime_ms: int = 0  # whole sandbox (pip + pytest + demo)
+    demo_runtime_ms: int = 0  # demo.py subprocess only
+    memory_peak_kb: int | None = None  # ru_maxrss of the process tree (approximate, Linux)
 
 
 class CodeArtifact(BaseModel):

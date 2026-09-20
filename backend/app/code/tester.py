@@ -19,8 +19,13 @@ SYSTEM = (
     "stdout — parse it with subprocess + json.loads; never assume command-line args "
     "or a second script. Assert that the spec's required keys are a SUBSET of the "
     "payload (required <= set(payload)); never assert exact key-set equality unless "
-    "acceptance_criteria fixes the full schema. Do not import demo internals beyond "
-    "subprocess. Return only the python file content, no markdown."
+    "acceptance_criteria fixes the full schema. Required JSON keys must be copied "
+    "VERBATIM from the 'Metric <name>' acceptance criteria — never rename, pluralize, "
+    "or re-synonymize them. Top-level metrics describe the PRIMARY scenario only; read "
+    "'scenario_results' for other scenarios. Prefer invariant assertions "
+    "(cache_hits >= 1, a hit scenario with zero added calls) over absolute aggregate "
+    "counters. Do not import demo internals beyond subprocess. "
+    "Return only the python file content, no markdown."
 )
 
 

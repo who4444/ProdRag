@@ -107,6 +107,8 @@ def test_offline_run_e2e_clarify_resume_and_result(tmp_path, monkeypatch):
         assert final["status"] == "done"
         assert final["verdict"] == "plausible"
         assert final["evaluation"]["verdict"] == "pass"
+        assert final["data"]["poc_plan"]["chosen_method"]
+        assert final["data"]["integration"]["changes_md"].startswith("# Integration plan")
 
         got = client.get(f"/runs/{run_id}", headers=headers).json()
         assert got["run"]["status"] == "done"

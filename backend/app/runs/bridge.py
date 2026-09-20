@@ -12,7 +12,7 @@ from ..rd.schemas import DemoSpec, Requirements, ResearchArtifact, ResearchSumma
 DIMENSIONS = ("technical", "integration", "data")
 
 
-def report_to_artifact(report: dict, idea: str) -> ResearchArtifact:
+def report_to_artifact(report: dict, idea: str, plan: dict | None = None) -> ResearchArtifact:
     data = report or {}
     understanding = data.get("understanding") or {}
     claims = data.get("claims") or []
@@ -52,13 +52,35 @@ def report_to_artifact(report: dict, idea: str) -> ResearchArtifact:
     supported_technical = [
         c.get("statement", "") for c in claims if c.get("dimension") == "technical" and c.get("status") == "supported"
     ]
-    core_algorithm = "\n".join(supported_technical) or understanding.get("interpretation", "")
     extension_points = codebase_map.get("extension_points") or []
-    pseudocode = "\n".join(
-        f"- {ep.get('path')}::{ep.get('symbol', '')} {ep.get('reason', '')}" for ep in extension_points[:5]
-    )
     hypotheses = understanding.get("hypotheses") or []
-    criteria = [f"PoC hypothesis: {h}" for h in hypotheses[:4]] + [
+
+    plan = plan or {}
+    metrics = plan.get("evaluation_metrics") or []
+    metric_names = [m.get("name") for m in metrics if m.get("name")]
+    if plan.get("chosen_method"):
+        core_algorithm = plan["chosen_method"]
+        if supported_technical:
+            core_algorithm += "\nEvidence: " + "; ".join(supported_technical)
+    else:
+        core_algorithm = "\n".join(supported_technical) or understanding.get("interpretation", "")
+    if metric_names:
+        core_algorithm += "\nRequired JSON keys (exact): " + ", ".join(metric_names)
+
+    if plan.get("implementation_requirements") or plan.get("system_context"):
+        pseudocode = "\n".join(f"- {r}" for r in plan.get("implementation_requirements") or [])
+        if plan.get("system_context"):
+            pseudocode += f"\nSystem context: {plan['system_context']}"
+    else:
+        pseudocode = "\n".join(
+            f"- {ep.get('path')}::{ep.get('symbol', '')} {ep.get('reason', '')}" for ep in extension_points[:5]
+        )
+
+    criteria = [f"PoC hypothesis: {h}" for h in hypotheses[:4]]
+    for m in metrics[:5]:
+        threshold = f" ({m.get('threshold')})" if m.get("threshold") else ""
+        criteria.append(f"Metric {m.get('name')} should {m.get('direction')}{threshold}")
+    criteria += [
         "demo.py exits 0 and prints a single JSON object to stdout with the measured outcome",
         "test_demo.py parses that JSON instead of scraping prose",
     ]

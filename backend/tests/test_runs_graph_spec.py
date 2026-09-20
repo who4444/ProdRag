@@ -82,6 +82,31 @@ EVAL_PASS = {
     "hypotheses": [{"hypothesis": "cache hit rate improves", "supported": True, "evidence": "pytest passed"}],
     "caveats": [],
     "verdict": "pass",
+    "performance_summary": "demo runs fast",
+    "technical_debt": [],
+    "extensibility": ["fits the extension point"],
+    "worthiness": "worth_it",
+}
+POC_PLAN = {
+    "chosen_method": "wrap rag_search with an LRU keyed by normalized question text",
+    "implementation_requirements": ["cache in tools/rag.py", "count embedding calls"],
+    "experiment_objective": "repeated identical questions perform zero embedding calls",
+    "evaluation_metrics": [{"name": "embedding_calls", "direction": "bounded", "threshold": "<=1 per unique question"}],
+    "system_context": "backend/app/tools/rag.py:rag_search",
+}
+INTEGRATION = {
+    "summary": "Apply the cache at the rag_search extension point.",
+    "files": [
+        {
+            "path": "backend/app/tools/rag.py",
+            "change_type": "modify",
+            "rationale": "shared retrieval entry point",
+            "sketch": "cache = LRU(maxsize=100)",
+        }
+    ],
+    "steps": ["add the cache", "count embedding calls"],
+    "risks": ["process-local cache only"],
+    "verification": ["pytest -q", "run demo.py and compare JSON metrics"],
 }
 
 
@@ -121,8 +146,12 @@ class RoutingClient:
                 return _response(json.dumps(CLAIMS))
             if "feasibility judge" in system:
                 return _response(json.dumps(self.judge))
+            if "experiment planner" in system:
+                return _response(json.dumps(POC_PLAN))
             if "evaluation analyst" in system:
                 return _response(json.dumps(EVAL_PASS))
+            if "integration planner" in system:
+                return _response(json.dumps(INTEGRATION))
             if "code analyzer" in system:
                 return _response(json.dumps(CODING_SPEC))
             if "test generator" in system:
@@ -202,12 +231,18 @@ async def test_graph_happy_path_with_clarify_interrupt_and_resume(graph_env, mon
     assert "feasibility/map" in kinds
     assert kinds.count("feasibility/claim") == 3
     assert "feasibility/report" in kinds
+    assert "research/plan" in kinds  # lean research agent before the PoC
     assert "poc/result" in kinds
     assert "eval/result" in kinds
+    assert "integration/plan" in kinds
     final = next(e for e in second if e.get("type") == "run" and e.get("event") == "result")
     assert final["status"] == "done"
     assert final["verdict"] == "plausible"
     assert final["evaluation"]["verdict"] == "pass"
+    assert final["data"]["poc_plan"]["chosen_method"]
+    integration = final["data"]["integration"]
+    assert integration["files"][0]["path"] == "backend/app/tools/rag.py"
+    assert integration["changes_md"].startswith("# Integration plan")
     assert final["data"]["usage"]["calls"] > 0
 
 
@@ -296,6 +331,33 @@ async def test_graph_poc_debug_retry_once(graph_env, monkeypatch):
     final = next(e for e in events if e.get("type") == "run" and e.get("event") == "result")
     assert final["status"] == "done"
     assert final["data"]["poc"]["sandbox"]["passed"] is True
+
+
+@pytest.mark.asyncio
+async def test_graph_skips_integration_when_poc_fails(graph_env, monkeypatch):
+    from app.runs.schemas import RunRequest
+
+    repo_id = (await _index(graph_env, monkeypatch)).repo_id
+
+    async def _failing_code_generate(client, artifact, session_id=None, feedback=None):
+        yield {
+            "type": "code",
+            "event": "artifact",
+            "data": {
+                "files": [{"path": "demo.py", "content": "raise SystemExit(1)"}],
+                "sandbox": {"passed": False, "pytest_log": "1 failed", "demo_log": "boom", "returncode": 1},
+                "coding_spec": {},
+            },
+        }
+
+    monkeypatch.setattr("app.runs.nodes.code_generate", _failing_code_generate)
+    events = await _events(RoutingClient(), RunRequest(idea="add caching", repo_id=repo_id))
+
+    skipped = [e for e in events if e.get("type") == "integration" and e.get("event") == "skipped"]
+    assert skipped and skipped[0]["reason"] == "poc_failed"
+    final = next(e for e in events if e.get("type") == "run" and e.get("event") == "result")
+    assert final["data"]["integration"] is None
+    assert final["evaluation"]["verdict"] == "fail"
 
 
 @pytest.mark.asyncio

@@ -36,9 +36,11 @@ async def run_file_task(client, task) -> GeneratedFile:
     demo_contract = ""
     if task_obj.path == "demo.py":
         demo_contract = (
-            "Print exactly one JSON object to stdout as the final output, using the exact "
-            "metric names from the context (no duplicate aliases such as both "
-            "embed_calls_total and embedding_calls). "
+            "Print exactly one JSON object to stdout as the final output. Top-level keys must "
+            "include every key listed under 'Required JSON keys (exact)' with those exact "
+            "spellings (no aliases), and must report the PRIMARY scenario (the repeated "
+            "identical question) — not a mix of scenarios. Put other scenarios under "
+            "'scenario_results' and any aggregate counters under 'totals'. "
         )
     prompt = (
         f"File to generate: {task_obj.path}\n"

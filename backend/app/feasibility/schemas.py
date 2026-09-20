@@ -65,6 +65,22 @@ class CodebaseMap(BaseModel):
     data_cleanliness: str = "unknown"
 
 
+class EvaluationMetric(BaseModel):
+    name: str = ""
+    direction: Literal["increase", "decrease", "present", "bounded"] = "present"
+    threshold: str = ""
+
+
+class PocPlan(BaseModel):
+    """Experiment design handed to the PoC phase (the lean research agent output)."""
+
+    chosen_method: str = ""
+    implementation_requirements: list[str] = Field(default_factory=list)
+    experiment_objective: str = ""
+    evaluation_metrics: list[EvaluationMetric] = Field(default_factory=list)
+    system_context: str = ""
+
+
 class FeasibilityReport(BaseModel):
     run_id: str = ""
     repo_id: str = ""

@@ -18,10 +18,12 @@ from .nodes import (
     evaluate_node,
     evidence_gate_node,
     finalize_node,
+    integration_node,
     judge_node,
     poc_generate_node,
     poc_retry_node,
     reframe_node,
+    research_node,
     understand_node,
 )
 from .state import RunState
@@ -51,11 +53,11 @@ def route_after_judge(state: RunState) -> str:
     verdict = state.get("verdict")
     reframes = int(state.get("reframes", 0))
     if verdict == "plausible":
-        return "poc" if budget_ok(state) else "finalize"
+        return "research" if budget_ok(state) else "finalize"
     if verdict in ("infeasible", "plausible_with_risks") and reframes < 1:
         return "reframe"
     if verdict == "plausible_with_risks":
-        return "poc" if budget_ok(state) else "finalize"
+        return "research" if budget_ok(state) else "finalize"
     return "finalize"
 
 
@@ -80,10 +82,12 @@ def build_graph(saver=None):
     g.add_node("assess", assess_node)
     g.add_node("evidence_gate", evidence_gate_node)
     g.add_node("judge", judge_node)
+    g.add_node("research", research_node)
     g.add_node("reframe", reframe_node)
     g.add_node("poc_generate", poc_generate_node)
     g.add_node("poc_retry", poc_retry_node)
     g.add_node("evaluate", evaluate_node)
+    g.add_node("integration_plan", integration_node)
     g.add_node("finalize", finalize_node)
 
     g.add_edge(START, "understand")
@@ -97,14 +101,16 @@ def build_graph(saver=None):
     g.add_edge("assess", "evidence_gate")
     g.add_conditional_edges("evidence_gate", route_after_gate, {"judge": "judge", "finalize": "finalize"})
     g.add_conditional_edges(
-        "judge", route_after_judge, {"reframe": "reframe", "poc": "poc_generate", "finalize": "finalize"}
+        "judge", route_after_judge, {"reframe": "reframe", "research": "research", "finalize": "finalize"}
     )
+    g.add_edge("research", "poc_generate")
     g.add_conditional_edges("reframe", route_after_reframe, {"understand": "understand", "finalize": "finalize"})
     g.add_conditional_edges(
         "poc_generate", route_after_poc, {"evaluate": "evaluate", "retry": "poc_retry", "finalize": "finalize"}
     )
     g.add_edge("poc_retry", "evaluate")
-    g.add_edge("evaluate", "finalize")
+    g.add_edge("evaluate", "integration_plan")
+    g.add_edge("integration_plan", "finalize")
     g.add_edge("finalize", END)
     return g.compile(checkpointer=saver if saver is not None else get_saver())
 

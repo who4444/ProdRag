@@ -56,6 +56,16 @@ async def test_chat_json_parses_fenced_json_and_records_usage(monkeypatch):
     assert client.calls[0]["response_format"] == {"type": "json_object"}
 
 
+def test_chat_json_tolerates_trailing_text_and_second_object(monkeypatch):
+    from app.core import llm
+
+    client = _FakeClient('{"a": 1}{"b": 2}')
+    assert asyncio.run(llm.chat_json(client, "s", "u")) == {"a": 1}
+
+    client = _FakeClient('{"ok": true}\n\nHope this helps!')
+    assert asyncio.run(llm.chat_json(client, "s", "u")) == {"ok": True}
+
+
 def test_chat_json_without_ledger_is_noop(monkeypatch):
     from app.config import settings
     from app.core import llm

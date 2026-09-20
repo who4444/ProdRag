@@ -156,9 +156,10 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
         pytest_log = pip_log + f"\npytest error: {e}"
         _pytest_code = 1
 
-    # demo.py
+    # demo.py (timed separately: this is the PoC's own runtime)
     demo_log = ""
     demo_code = 0
+    demo_start = time.time()
     try:
         proc = subprocess.run(
             [sys.executable, "demo.py"],
@@ -175,9 +176,20 @@ def _run_sync(tmp: Path, timeout: int) -> tuple[int, str, str, int]:
     except Exception as e:
         demo_log = str(e)
         demo_code = 1
+    demo_runtime_ms = int((time.time() - demo_start) * 1000)
+
+    memory_peak_kb: int | None = None
+    try:
+        import resource
+
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+        # Linux reports KB; macOS reports bytes — normalize the obvious case.
+        memory_peak_kb = int(usage) if sys.platform != "darwin" else int(usage // 1024)
+    except Exception:
+        memory_peak_kb = None
 
     runtime_ms = int((time.time() - start) * 1000)
-    return demo_code, _pytest_code, pytest_log, demo_log, runtime_ms
+    return demo_code, _pytest_code, pytest_log, demo_log, runtime_ms, demo_runtime_ms, memory_peak_kb
 
 
 async def run_sandbox(files: list[dict | BaseModel], timeout: int = 15) -> SandboxResult:
@@ -198,8 +210,8 @@ async def run_sandbox(files: list[dict | BaseModel], timeout: int = 15) -> Sandb
 
             # Run in thread to avoid blocking event loop (like db.py to_thread)
             loop = asyncio.get_running_loop()
-            demo_code, pytest_code, pytest_log, demo_log, runtime_ms = await loop.run_in_executor(
-                None, lambda: _run_sync(tmp, timeout)
+            (demo_code, pytest_code, pytest_log, demo_log, runtime_ms, demo_runtime_ms, memory_peak_kb) = (
+                await loop.run_in_executor(None, lambda: _run_sync(tmp, timeout))
             )
 
             # Exit codes decide: pytest errors/collection failures must fail the run
@@ -214,6 +226,8 @@ async def run_sandbox(files: list[dict | BaseModel], timeout: int = 15) -> Sandb
                 demo_log=demo_log[:4000],
                 returncode=demo_code,
                 runtime_ms=runtime_ms,
+                demo_runtime_ms=demo_runtime_ms,
+                memory_peak_kb=memory_peak_kb,
             )
     except Exception as e:
         return SandboxResult(passed=False, pytest_log=str(e)[:4000], demo_log="", returncode=1, runtime_ms=0)
