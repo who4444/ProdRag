@@ -99,6 +99,7 @@ All except `GET /health` require `Authorization: Bearer $PRODRAG_API_TOKEN`.
 | `POST /rd/research` | POST | `{"requirements","session_id?","idea?", k?, k_images?}` | NDJSON `orchestrator/plan`, `subagent/*` x5, `validator/result`, `artifact` | fixed taxonomy, emit-with-risks |
 | `POST /code/analyze` | POST | `{"artifact": ResearchArtifact}` | `{"file_tasks","test_intents","dependencies","risks", "coding_spec":{...}}` | one json_object call, fallback on failure |
 | `POST /code/generate` | POST | `{"artifact": ResearchArtifact, "session_id?"}` | NDJSON `code/plan`, `code/file_start|file_result` x3, `tester/result`, `sandbox/start|result`, `code/artifact` | `code/artifact` contains `CodeArtifact{files, test_file, sandbox, coding_spec}` |
+| `POST /code/extend` | POST | `{"idea", "repo_id"?|"path"?, "entrypoint"?, "session_id"?}` | NDJSON `code/extend_start`, `code/context`, `code/plan`, `code/change_start|change_result`, `tester/result`, `sandbox/start|result`, `code/artifact` | PoC extension grounded by repo RAG (`repo_id`) or walker+lexical (`path`); real repo never modified — changes validated in a temp copy |
 | `POST /tools/search` | POST | `{"query", k?}` | `{"enabled","results":[{title,url,snippet}],"formatted"}` | web_search (Tavily/Serper/generic), `[]` when unconfigured |
 | `GET /tools/search` | GET | `?query=&k=` | same | probe from browser (avoids 405) |
 | `GET /tools/search/status` | GET | — | `{"enabled":bool}` | |
@@ -204,7 +205,7 @@ Env: `PRODRAG_` prefix (`backend/app/config.py:6` reads `../.env` in Docker, `ba
 
 ```bash
 uv sync --extra dev --extra modal --extra frontend
-uv run pytest -q   # 239 tests (RD + code + search + repo RAG + feasibility + graph runs, pytest-asyncio)
+uv run pytest -q   # 260 tests (RD + code + extend + search + repo RAG + feasibility + graph runs + eval, pytest-asyncio)
 uv run ruff check backend/app backend/tests eval
 
 # zero-credential boot: in-memory Qdrant + deterministic hash embeddings
@@ -215,7 +216,7 @@ PRODRAG_OFFLINE=1 uv run uvicorn app.main:app --reload   # from backend/
 
 ```bash
 uv sync --extra frontend
-cd frontend && uv run streamlit run app.py   # tabs: Documents / Ask / Research / R&D / Feasibility / Code / Memory / Runs
+cd frontend && uv run streamlit run app.py   # single-page full-run UI; legacy tabs under Utilities expander
 # Simple test UIs (no Streamlit):
 open frontend/simple_test.html          # pure HTML/JS — health, docs, RAG, R&D, web search
 # or

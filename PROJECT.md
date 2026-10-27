@@ -27,7 +27,7 @@ idea -> [Analyzer] -> Requirements -> [Orchestrator -> Subagents x5] -> [Validat
 
 ---
 
-## 2. Current state (verified 2026-09-19 — v1: idea -> research -> code + repo RAG M1 + feasibility M2 + LangGraph runs M3 + research/worthiness/integration M3.5, 239 tests)
+## 2. Current state (verified 2026-10-27 — v1: idea -> research -> code + repo RAG M1 + feasibility M2 + LangGraph runs M3 + research/worthiness/integration M3.5 + extend mode + eval harness, 260 tests)
 
 The system is a working multimodal RAG pipeline extended with the R&D research pipeline and the **code generation pipeline** (artifact -> sandbox-tested demo). Everything below is running/verified except where noted.
 
@@ -48,6 +48,7 @@ The system is a working multimodal RAG pipeline extended with the R&D research p
 | Search Tool    | `backend/app/tools/search.py` (Tavily/Serper/generic proxy, `enabled()` false → no-op) | optional web fallback when RAG `<2`, legacy agent second tool |
 | R&D Pipeline   | `backend/app/rd/{analyzer,orchestrator,subagent,validator,artifacts,pipeline}.py` | idea -> research -> artifact |
 | Code Pipeline  | `backend/app/code/{analyzer,orchestrator,subagent,tester,sandbox,pipeline}.py` | artifact -> sandbox-tested demo (`demo.py`+`test_demo.py`) |
+| Extend Pipeline | `backend/app/code/{repo_context,extend_analyzer,extend_orchestrator,extend_subagent,extend_tester,patcher,repo_sandbox,extend_pipeline}.py` | idea + repo_id/path → grounded create/modify plan → changes validated on a repo copy |
 | Repo indexing  | `backend/app/repo/{walker,chunker,indexer}.py` + `tools/code_rag.py` | local path -> AST chunks -> Qdrant `code_chunks` (repo RAG, M1) |
 | Feasibility    | `backend/app/feasibility/{understand,codebase_map,planner,subagent,judge,citation,pipeline}.py` | idea + repo -> cited technical/integration/data verdict (M2) |
 | Run control    | **LangGraph** `backend/app/runs/{state,graph,nodes,controller,checkpoint,evaluate,bridge,integration}.py` | durable graph run: feasibility -> research plan -> PoC -> eval -> integration plan; interrupts, budget edges (M3/M3.5) |
@@ -144,7 +145,7 @@ backend/app/           # FastAPI + worker package (organized by concern)
   agent.py             # research(): single tool-calling loop (now with optional web_search tool)
   memory.py            # conv (Supabase messages) + episodic (Qdrant + Supabase)
   worker.py            # arq WorkerSettings
-backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_feasibility_*_spec.py, test_runs_*_spec.py, test_llm_usage.py, test_offline_mode.py, test_search.py (239 tests)
+backend/tests/         # test_chunking.py, test_pdf_parser.py, test_agent.py, test_rd_*.py, test_code_*.py, test_repo_*.py, test_feasibility_*_spec.py, test_runs_*_spec.py, test_eval_spec.py, test_llm_usage.py, test_offline_mode.py, test_search.py (260 tests)
 deploy/docker-compose.yml   # qdrant + redis + api + worker (no MinIO anymore)
 deploy/modal/          # embed_service.py, clip_service.py, search_proxy.py example, manage.sh, README.md
 frontend/              # Streamlit app.py + api.py + simple_test.html (Documents / Ask / Research / R&D + simple test UIs)
@@ -202,6 +203,7 @@ All endpoints require `Authorization: Bearer $PRODRAG_API_TOKEN` (except `GET /h
 - `POST /rd/research` — R&D pipeline: `{requirements, session_id?, idea?}` → NDJSON stream: `orchestrator/plan`, `subagent/start`, `subagent/result` (x5), `validator/result`, `artifact` (ResearchArtifact). Fixed taxonomy: `core_algorithm`, `datasets`, `baselines`, `implementation_details`, `evaluation`. Validator always emits (emit-with-risks); subagents auto-append `web_search` when RAG `<2`.
 - `POST /code/analyze` — code analyzer: `{artifact: ResearchArtifact}` → `{file_tasks, test_intents, dependencies, risks, coding_spec:{...}}`. One `json_object` LLM call, no KB, fallback on failure.
 - `POST /code/generate` — code pipeline: `{artifact: ResearchArtifact, session_id?}` → NDJSON stream: `code/plan`, `code/file_start|file_result` x3 (`demo.py`, `requirements.txt`, `test_demo.py`), `tester/result` (from `CodingSpec`+`acceptance_criteria`, not from code), `sandbox/start|result` (`{passed, pytest_log, demo_log, returncode}`), `code/artifact` (`CodeArtifact{files, test_file, sandbox}`). Persisted to `code_runs`/`code_artifacts` (best-effort).
+- `POST /code/extend` — PoC extension of a given codebase: `{idea, repo_id?|path?, entrypoint?}` → NDJSON `code/extend_start`, `code/context`, `code/plan` (create/modify tasks), `code/change_start|change_result`, `tester/result`, `sandbox/start|result` (repo copy + pytest), `code/artifact` (`ExtendArtifact{repo, extend_spec, changes, test_file, sandbox}`). Grounded by repo RAG when indexed, walker+lexical for local paths. Real repo never modified — changes validated in a temp copy.
 - `POST /tools/search` — web search probe: `{query, k?}` → `{"enabled", "results":[{title,url,snippet}], "formatted"}`; `GET /tools/search?query=&k=` and `GET /tools/search/status` for browser probing (avoids 405).
 - `POST /repo/index` — `{path, repo_id?, name?}` (local path) → `RepoStats{repo_id, name, root, files, chunks, skipped, runtime_ms}`. Deterministic repo id; re-index deletes old points first.
 - `POST /repo/search` — `{query, k?, repo_id?, path_prefix?}` → `{hits:[{path, symbol, kind, start_line, end_line, score, snippet}]}` (hybrid; offline lexical rerank).
@@ -469,7 +471,20 @@ Legacy `/research` events (`memory/session`, `agent/tool_call`, etc.) remain unc
 * **Pipeline** (`code/pipeline.py`): `code_generate(client, artifact, session_id?)` — `analyze_artifact` → `build_code_plan` → `run_file_task` x3 (sequential) → `generate_tests` → `run_sandbox` → `CodeArtifact{artifact_run_id, coding_spec, files, test_file, sandbox, created_at}`. Streams events above, best-effort `code_runs`/`code_artifacts` persist (swallows DB errors like R&D).
 * **Schemas** (`code/schemas.py`): `FileTask`, `CodingSpec`, `GeneratedFile`, `SandboxResult`, `CodeArtifact`, `CodeAnalyzeRequest/Response`, `CodeGenerateRequest`.
 
-### 4.11 Model notes
+### 4.11 Extend pipeline design — `backend/app/code/extend_*`
+
+Extend mode adds NEW files under `backend/app/code/`; the v1 code-pipeline files are untouched.
+
+* **Repo context** (`code/repo_context.py`): `build_repo_context(idea, repo_id=None, path=None, k=8) -> RepoContext{repo_id, root, mode: repo|local|none, files: {path: text}, hits}` — indexed repos ground via `tools/code_rag.code_search` + Qdrant scroll for full texts; local paths via `repo/walker.walk_repo` + offline lexical scoring (`core/sparse.tokens`); `context_digest(ctx)` builds the LLM-facing digest.
+* **Extend analyzer** (`code/extend_analyzer.py`): `analyze_extension(client, idea, ctx) -> ExtendSpec{entrypoint, focus_paths, file_tasks: [ExtendFileTask{path, action: create|modify, goal, content, search_replace}], test_intents, dependencies, risks}` — one `json_object` LLM call grounded in the repo digest; fallback = safe create-only plan (`extend_poc.py` stub, never modifies existing files); entrypoint forced onto a changed path.
+* **Extend orchestrator** (`code/extend_orchestrator.py`): pure `build_extend_plan(spec, ctx) -> [ExtendFileTask]` — sanitizes paths (rejects `..`/absolute), dedupes, orders modify-first, caps at 3.
+* **Change subagent** (`code/extend_subagent.py`): `run_change_task(client, task, ctx, feedback=None)` — fills empty `task.content`: modify tasks get the current file content and must return the COMPLETE updated file; create tasks get the repo digest and write integrating new code. One LLM call, fence-stripping, never raises (failed tasks stay content-empty and the patcher skips them).
+* **Extend tester** (`code/extend_tester.py`): `generate_extend_tests(client, idea, spec, ctx, feedback=None) -> GeneratedFile(path="test_extend_poc.py")` — pytest file importing the changed modules with repo-root-relative imports, offline-only; fallback asserts the entrypoint file exists.
+* **Patcher** (`code/patcher.py`): `apply_changes(root, tasks) -> (changes: [{path, action, applied, bytes}], log)` — create writes new files; modify replaces the whole file or applies exact `search_replace` blocks. Path-traversal safe (`..`/absolute rejected); modify-with-empty-content NEVER clobbers (skipped); modify of a missing target demotes to create.
+* **Repo sandbox** (`code/repo_sandbox.py`): `run_repo_sandbox(root, files, tasks, timeout=120, entrypoint="") -> (SandboxResult{+repo_log}, changes)` — copies ONLY the context subset into a temp dir (whole tree via `copytree` when `files=None`, honoring walker ignore dirs), applies changes there, runs the repo's own `pytest -q` (pip install only if `requirements.txt` is non-empty; pytest exit 0/127 + no timeout = passed; entrypoint exec optional). The REAL repo is never touched.
+* **Extend pipeline** (`code/extend_pipeline.py`): `code_extend_stream(client, req, session_id=None, feedback=None)` — NDJSON events (same family as v1, tagged `"mode": "extend"`): `code/extend_start` → `code/context` (hits + repo_mode + n_files) → `code/plan` (extend_spec + file_tasks) → `code/change_start|change_result` per task (parallel, semaphore 3) → `tester/result` → `sandbox/start|result` → `code/artifact` (`ExtendArtifact{repo (lite: line counts only), extend_spec, changes, test_file, sandbox}`). Errors yield `code/extend_error`. Best-effort persisted to `code_runs`/`code_artifacts` (request stored as the artifact dict, status done|failed by sandbox).
+
+### 4.12 Model notes
 
 - `agent_model` (default `deepseek-v4-flash`) supports OpenAI-format tool calling. `deepseek-v4-pro` available for harder planning.
 - DeepSeek is text-only: figures are `object_key`/URL refs, never embedded into the model context unless `chat_supports_images` is later set with a vision model.
@@ -477,7 +492,7 @@ Legacy `/research` events (`memory/session`, `agent/tool_call`, etc.) remain unc
 
 ---
 
-### 4.12 Feasibility pipeline design — `backend/app/feasibility/` (M2)
+### 4.13 Feasibility pipeline design — `backend/app/feasibility/` (M2)
 
 `idea + indexed repo -> cited feasibility report`. Every plausibility verdict must cite
 `file:line` evidence that resolves in the repo; the LLM proposes, the filesystem decides.
@@ -515,7 +530,7 @@ POST /feasibility/analyze {idea, repo_id, understanding?}
   in-memory store). `report.usage` carries the token/cost ledger for the run.
 * **Repos:** resolve via `repos.root`; unknown/deleted path -> HTTP 400 before streaming.
 
-### 4.13 Run control layer — `backend/app/runs/` (M3, LangGraph)
+### 4.14 Run control layer — `backend/app/runs/` (M3, LangGraph)
 
 One durable graph per run: feasibility → PoC → evaluation, with deterministic routing
 (no LLM picks the next node), human interrupts, bounded cycles, and budget edges.
@@ -552,7 +567,7 @@ evaluate ----------- -> integration_plan (skipped when PoC failed/budget) -> fin
 * **Never blocks:** nodes catch their own failures and mark claims/statuses; finalize always
   emits a `RunResult` (emit-with-risks).
 
-### 4.14 Research plan, worthiness, integration plan (M3.5)
+### 4.15 Research plan, worthiness, integration plan (M3.5)
 
 Closes the gaps against the original design: a research step inside the run, an
 evaluation that judges worth (not just pass/fail), and documentation of how to apply
@@ -635,6 +650,7 @@ Implemented:
 - `POST /rd/research` — `{requirements, session_id?, idea?}` → NDJSON `orchestrator/plan`, `subagent/*` (x5), `validator/result`, `artifact` (ResearchArtifact). Fixed 5-direction taxonomy, validator emit-with-risks; subagents auto-append `web_search` when RAG `<2`.
 - `POST /code/analyze` — `{artifact: ResearchArtifact}` → `{file_tasks, test_intents, dependencies, risks, coding_spec}`. One `json_object` LLM call, no KB, fallback on failure.
 - `POST /code/generate` — `{artifact: ResearchArtifact, session_id?}` → NDJSON `code/plan`, `code/file_start|file_result` x3, `tester/result`, `sandbox/start|result`, `code/artifact` (CodeArtifact). Sandbox is `tmpdir+subprocess` (pip/pytest/demo), never raises.
+- `POST /code/extend` — PoC extension of a given codebase: `{idea, repo_id?|path?, entrypoint?}` → NDJSON `code/extend_start`, `code/context`, `code/plan` (create/modify tasks), `code/change_start|change_result`, `tester/result`, `sandbox/start|result` (repo copy + pytest), `code/artifact` (`ExtendArtifact{repo, extend_spec, changes, test_file, sandbox}`). Grounded by repo RAG when indexed, walker+lexical for local paths. Real repo never modified — changes validated in a temp copy.
 - `POST /tools/search` — `{query, k?}` → `{"enabled","results":[{title,url,snippet}],"formatted"}`; `GET /tools/search?query=&k=` and `GET /tools/search/status` for browser probing (avoids 405). Web search via Tavily/Serper/generic proxy, `[]` when unconfigured.
 
 Not built yet (YAGNI until requested):
@@ -713,6 +729,8 @@ Not built yet (YAGNI until requested):
 - **Phase 1 — agent loop (DONE).** `POST /research` streams `kb_search` tool calls → sources → answer; conversation + episodic memory auto-wired. Frontend Research tab. Tests: `test_agent.py`.
 - **Phase 2 — R&D research pipeline (DONE).** `POST /rd/analyze` (second-request handshake, no KB) + `POST /rd/research` (fixed 5-direction fan-out, subagents with RAG+web fallback, validator emit-with-risks, `ResearchArtifact` handoff). Frontend R&D tab. `GET/POST /tools/search` (Tavily/Serper/generic, enabled() false → no-op) + CORS for `file://` test UI. Tests: `test_rd_*.py`, `test_search.py` (42+ tests).
 - **Phase 3 — coding module (DONE, v1).** `POST /code/analyze` (artifact → `CodingSpec`) + `POST /code/generate` (analyzer → orchestrator (fixed 3 files) → subagents (one LLM/file) → tester (from spec, not code) → sandbox (`tmpdir+subprocess` pip/pytest/demo) → `CodeArtifact`). Frontend via `simple_test.html`/`simple_test_app.py`. Tests: `test_code_*_spec.py` (44 tests).
+- **Phase 3b — extend mode (PoC, v1).** `POST /code/extend`: idea + indexed/local repo → repo-grounded ExtendSpec (create/modify) → change subagents → repo-copy sandbox (repo pytest + optional entrypoint) → `ExtendArtifact`. v1 files untouched; tests `test_code_extend_spec.py`.
+- **Phase 3c — single-page frontend (consolidated).** app.py rewritten from 8 tabs to a single-page full-run UI: idea → clarify → research stream → artifact → demo (/code/generate) and/or extend (/code/extend, repo target + optional feasibility) auto-chained, consolidated Result with per-file downloads; prior tab features kept under a collapsed Utilities expander.
 - **Phase 4 — conversation UX + Memory tab.** Session picker / "new session" in the UI; `/conversations` endpoints only if a conversation list is wanted.
 - **Phase 5 — hardening.** Docker/gVisor sandbox, `GET /code/runs` history, Storage objects for large code artifacts, auto-retry on sandbox fail.
 - **Phase 6 — eval for agentic quality.** extend `eval/` beyond recall@k: answer faithfulness (citation coverage) + R&D artifact + code sandbox pass rate.
@@ -722,6 +740,32 @@ Not built yet (YAGNI until requested):
 - **M3 — LangGraph control layer + PoC + eval (DONE).** Deps `langgraph` + `langgraph-checkpoint-postgres` (core). `backend/app/runs/`: deterministic StateGraph (understand → clarify interrupt → codebase_map → assess x3 → evidence gate → judge → reframe interrupt → PoC → debug ≤1 → evaluate → finalize), `AsyncPostgresSaver`/`InMemorySaver` checkpoints, per-run usage ledger with `UsageTrackingClient` for PoC calls, `rd_runs`/`rd_events` persistence, `POST /runs` + `POST /runs/{id}/resume` + `GET /runs/{id}`. Tests: `test_runs_*_spec.py` (15). 202 → 217 tests. Deviation from plan: the 3 dimensions run inside one `assess` node via `asyncio.gather` instead of LangGraph `Send` fan-out — simpler state (claims are replaceable on reframe) with the same concurrency.
 - **M3.5 — research plan + worthiness + integration docs (DONE).** Lean research agent (`poc_plan.py`) between judge and PoC; sandbox performance metrics (demo runtime, peak memory) and `worthiness{debt,extensibility,verdict}` in `EvaluationReport`; integration proposal (`changes.md`) for passing PoCs; retry feedback now carries previous file contents; JSON parser tolerates trailing text. Tests: `test_feasibility_poc_plan_spec.py`, `test_runs_integration_spec.py` (+12). 217 -> 239 tests.
 - **M4 — portfolio packaging (next).** README v3, ADRs, `eval/feasibility_eval.py` + frozen golden set (2 external repos, n=20, LLM-only baseline), results JSON/table, demo script, Streamlit run-graph controls.
+
+### Future expansion — eval-gated true MAS (M5+, trigger-based, not YAGNI yet)
+
+Today the system is a **multi-agent workflow**: role-specialized workers (3 feasibility assessors, research planner, file subagents, tester, judge, evaluator) coordinated by a *deterministic* controller. Agents never message each other; routing is developer-defined. A true MAS (LLM-driven delegation, inter-agent debate, independent long-running actors) is **deferred until measured need exists**.
+
+**Adoption triggers (need at least two, evidenced by M4 eval):**
+1. Recurring `missing_evidence` / unsupported dimensions that extra retrieval rounds resolve (single-pass assessors insufficient).
+2. Cross-dimension contradictions (data says no data, technical proposes synthesis, integration rejects it) reaching the judge unresolved.
+3. False "plausible" verdicts that an adversarial falsifier agent would catch.
+4. Multi-repo / monorepo cases where subsystem agents must reconcile conflicting extension points.
+5. Batch mode (N ideas per night) needing a supervisor to allocate shared budget across concurrent runs.
+6. Heterogeneous model routing (cheap vs deep model per role) with quality/cost negotiation.
+
+**Scope when triggered (flag-gated, workflow remains default):**
+- `PRODRAG_MAS=1` feature flag; default graph unchanged.
+- `backend/app/runs/supervisor.py`: one supervisor node using LangGraph `Command(goto=...)` to delegate dynamically between existing nodes (no rewrite of feasibility/code logic).
+- Optional `debate` loop: assessor ↔ falsifier exchange over the claim set, bounded (≤2 rounds), only when citations are contested.
+- Budget arbiter: `max_llm_calls`/`max_wall_s`/`cost_usd` become a shared pool with per-agent reservations instead of a run-wide constant.
+- Per-agent checkpoints/threads so a long-running actor can be resumed independently.
+
+**Guardrails (non-negotiable):**
+- The citation gate and evidence ledger stay deterministic; MAS must not bypass them.
+- Every MAS run must be compared against the workflow on the frozen golden set; adopt only if verdict accuracy improves and cost stays within budget.
+- All dynamic delegation decisions and messages land in `rd_events` (observable, replayable).
+
+**Explicit non-goals until then:** agent-to-agent free-form messaging, autonomous open-ended loops, self-modifying plans without human interrupts, and replacing the deterministic controller (that would erode testability, cost control, and the evidence guarantees).
 
 ---
 
@@ -738,7 +782,7 @@ docker compose -f deploy/docker-compose.yml up --build
 psql "$PRODRAG_DATABASE_URL" -f backend/app/core/schema.sql
 # or paste backend/app/core/schema.sql into Supabase SQL editor
 
-# tests (239, pytest-asyncio) + lint
+# tests (260, pytest-asyncio) + lint
 uv run pytest -q
 uv run ruff check backend/app backend/tests eval
 

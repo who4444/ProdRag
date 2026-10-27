@@ -156,6 +156,31 @@ def repo_search(base_url: str, token: str, query: str, repo_id: str | None = Non
     return r.json()
 
 
+def code_extend_stream(
+    base_url: str,
+    token: str,
+    idea: str,
+    repo_id: str | None = None,
+    path: str | None = None,
+    entrypoint: str | None = None,
+    session_id: str | None = None,
+):
+    headers = {"Authorization": f"Bearer {token}"}
+    payload: dict = {"idea": idea}
+    if repo_id:
+        payload["repo_id"] = repo_id
+    if path:
+        payload["path"] = path
+    if entrypoint:
+        payload["entrypoint"] = entrypoint
+    if session_id:
+        payload["session_id"] = session_id
+    r = requests.post(f"{base_url}/code/extend", headers=headers, json=payload, stream=True, timeout=600)
+    if r.status_code >= 400:
+        raise APIError(f"HTTP {r.status_code}: {r.text[:500]}")
+    return r
+
+
 def feasibility_understand(
     base_url: str, token: str, idea: str, answers: list[str] | None = None, session_id: str | None = None
 ) -> dict:

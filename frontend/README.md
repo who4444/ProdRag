@@ -1,7 +1,19 @@
 # ProdRag frontend (Streamlit)
 
-Standard UI: upload PDFs, track async ingestion, and ask questions with a
-streamed answer plus retrieved text/table sources and figure thumbnails.
+`app.py` is a single-page full-run UI: describe one idea, press **Run**, and the
+whole pipeline executes in place. Prior tab features live under a collapsed
+**🧰 Utilities** expander.
+
+## Flow
+
+- One idea → inline clarification to lock requirements.
+- Research streams live into a `ResearchArtifact`.
+- Code stage picks a mode: **Demo PoC** (`/code/generate`), **Extend a codebase**
+  (`/code/extend`, repo index/select + optional feasibility pre-check), or
+  **Both** — auto-chained behind the single Run button.
+- Consolidated **Result** section with per-file download buttons.
+- Documents (upload/status/delete/reingest), Ask, Memory, and Runs history stay
+  available in the Utilities expander.
 
 ## Run
 
@@ -31,7 +43,9 @@ The sidebar "Check connection" hits `/health` to validate before you start.
 
 ## Notes
 
-- Ingestion is async: uploads are queued and status is shown in the Documents
-  tab (refresh to poll).
+- Ingestion is async: uploads are queued and status is shown under Utilities →
+  Documents (refresh to poll).
 - `/query` streams NDJSON; the answer is rendered progressively. Figure sources
   are fetched via the authenticated `/files` endpoint and shown inline.
+- `simple_test_app.py` and `simple_test.html` remain as minimal API test
+  harnesses (not the main UI).

@@ -8,7 +8,7 @@ import json
 
 import streamlit as st
 
-from api import APIError, document_status, get_file, health, query_stream, rd_analyze, rd_research_stream, upload_document
+from api import APIError, code_extend_stream, document_status, get_file, health, query_stream, rd_analyze, rd_research_stream, repo_list, upload_document
 
 st.set_page_config(page_title="ProdRag Simple Test", page_icon="🧪", layout="wide")
 st.title("🧪 ProdRag — Simple Test")
@@ -23,7 +23,7 @@ if st.button("Check health"):
     except Exception as e:
         st.error(str(e))
 
-tab_docs, tab_rag, tab_rd = st.tabs(["Documents", "RAG", "R&D"])
+tab_docs, tab_rag, tab_rd, tab_ext = st.tabs(["Documents", "RAG", "R&D", "Code Extend (PoC)"])
 
 with tab_docs:
     f = st.file_uploader("PDF", type=["pdf"])
@@ -129,3 +129,61 @@ with tab_rd:
                                 st.json(evt["data"])
             except APIError as e:
                 st.error(str(e))
+
+with tab_ext:
+    mode = st.radio("Target", ["indexed repo", "local path"])
+    repo_id = ""
+    path = ""
+    if mode == "indexed repo":
+        try:
+            repos = repo_list(api_url, api_token)
+            repo_id = st.selectbox("Repo", options=[r.get("id") or r.get("repo_id") or "" for r in repos])
+        except APIError as e:
+            st.error(str(e))
+    else:
+        path = st.text_input("Repo path")
+    idea = st.text_area("Extension idea", placeholder="e.g. add a square helper to the pkg module")
+    entrypoint = st.text_input("Entrypoint (optional)", placeholder="pkg/extra.py")
+    if st.button("Extend", disabled=not idea.strip() or not (repo_id or path)):
+        try:
+            resp = code_extend_stream(api_url, api_token, idea, repo_id=repo_id or None, path=(path or None), entrypoint=entrypoint or None)
+            with resp:
+                for line in resp.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    evt = json.loads(line)
+                    etype = evt.get("type")
+                    if etype == "extend_start":
+                        st.caption(f"run {evt['run_id']}")
+                    elif etype == "context":
+                        st.info(f"repo mode {evt.get('repo_mode')} — {evt.get('n_files', 0)} files, {len(evt.get('hits', []))} hits")
+                    elif etype == "plan":
+                        st.write(f"Plan: {len(evt['file_tasks'])} changes")
+                        for t in evt["file_tasks"]:
+                            st.write(f"{'✏️ modify' if t.get('action') == 'modify' else '✨ create'} — {t['path']}")
+                    elif etype == "change_start":
+                        st.caption(f"⏳ {evt.get('action')} {evt.get('path')}")
+                    elif etype == "change_result":
+                        file = evt["file"]
+                        st.write(f"**{file['path']}** ({file['action']})")
+                        st.code(file.get("content", "") or "(search/replace blocks)")
+                    elif etype == "tester":
+                        st.write("🧪 Test file:")
+                        st.code(evt["file"]["content"])
+                    elif etype == "sandbox" and evt.get("event") == "result":
+                        sb = evt["sandbox"]
+                        if sb["passed"]:
+                            st.success("✅ repo tests passed")
+                        else:
+                            st.error("❌ sandbox failed")
+                        with st.expander("Sandbox logs"):
+                            st.json(sb)
+                    elif etype == "artifact":
+                        st.success("Artifact ready")
+                        with st.expander("Full extend artifact"):
+                            st.json(evt["data"])
+                    elif etype == "extend_error":
+                        st.error(evt.get("message", "unknown error"))
+                        break
+        except APIError as e:
+            st.error(str(e))

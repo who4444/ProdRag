@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "files": {
+    "code.jsonl": "f4e582f8116a3e3c7767796424583464a0bf55bbe2f9cc8e82ab1a9dab723187",
+    "faithfulness.jsonl": "75d54a22d418807c7df12ecd657d802d6d8ce323e26ded3a9401a6cbca596d04",
+    "feasibility.jsonl": "7cec282e33194f66faedf33ab6b3aec2a0a89ad9686b5cb7c06d4ba2e860086e",
+    "runs.jsonl": "f0864689383d3374d8137552314ac996386edf3b6d897195ccad22793d0a5525"
+  },
+  "counts": {
+    "code.jsonl": 10,
+    "faithfulness.jsonl": 20,
+    "feasibility.jsonl": 20,
+    "runs.jsonl": 5
+  },
+  "generator_version": "v1"
+}

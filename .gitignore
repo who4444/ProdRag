@@ -6,3 +6,7 @@ __pycache__
 .pytest_cache
 prodrag.egg-info
 ~/.cache/clip
+.dsh-ocean
+eval/results/*.json
+!eval/results/.gitkeep
+eval/results/SUMMARY.md

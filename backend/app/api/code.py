@@ -8,6 +8,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ..code.analyzer import analyze_artifact
 from ..code.pipeline import code_generate
 from ..core import db
+from ..code.extend_pipeline import code_extend_stream
+from ..code.schemas import CodeExtendRequest
 
 router = APIRouter(prefix="/code")
 
@@ -67,6 +69,28 @@ async def code_generate_endpoint(request: Request):
 
     async def _gen():
         async for evt in code_generate(request.app.state.client, artifact, session_id=session_id):
+            yield json.dumps(evt) + "\n"
+
+    return StreamingResponse(_gen(), media_type="application/x-ndjson")
+
+
+@router.post("/extend")
+async def code_extend_endpoint(request: Request):
+    body = await request.json()
+    if not isinstance(body, dict) or not str(body.get("idea", "")).strip():
+        raise HTTPException(status_code=422, detail="idea required")
+    if not (body.get("repo_id") or body.get("path")):
+        raise HTTPException(status_code=422, detail="repo_id or path required")
+    req = CodeExtendRequest(
+        idea=str(body.get("idea", "")),
+        repo_id=body.get("repo_id") or None,
+        path=body.get("path") or None,
+        entrypoint=str(body.get("entrypoint", "")),
+        session_id=body.get("session_id"),
+    )
+
+    async def _gen():
+        async for evt in code_extend_stream(request.app.state.client, req, session_id=req.session_id):
             yield json.dumps(evt) + "\n"
 
     return StreamingResponse(_gen(), media_type="application/x-ndjson")
